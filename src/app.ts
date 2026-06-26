@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import healthRouter from "./routes/health.js";
+import { db } from "./db/index.js";
+import { tenants } from "./db/schema.js";
 
 const app = new Hono();
 
@@ -13,6 +15,40 @@ app.use("*", async (c, next) => {
 
 // Health route
 app.route("/health", healthRouter);
+
+app.post("/tenants", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { name, plan } = body;
+    if (!name || !plan) {
+      return c.json(
+        {
+          success: false,
+          message: "Missing required fields",
+        },
+        400,
+      );
+    }
+    const tenant = await db.insert(tenants).values({ name, plan }).returning();
+    return c.json(
+      {
+        success: true,
+        message: "Tenant created successfully",
+        data: tenant,
+      },
+      201,
+    );
+  } catch (error) {
+    console.error(error);
+    return c.json(
+      {
+        success: false,
+        message: "Failed to create tenant",
+      },
+      500,
+    );
+  }
+});
 
 // Custom 404 Handler
 app.notFound((c) => {
