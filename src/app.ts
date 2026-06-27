@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import healthRouter from "./routes/health.js";
 import { db } from "./db/index.js";
 import { tenants } from "./db/schema.js";
+import { keysRouter } from "./routes/keys.js";
 
 const app = new Hono();
 
@@ -16,6 +17,10 @@ app.use("*", async (c, next) => {
 // Health route
 app.route("/health", healthRouter);
 
+// Keys route
+app.route("/keys", keysRouter);
+
+// Protected test route
 app.post("/tenants", async (c) => {
   try {
     const body = await c.req.json();
