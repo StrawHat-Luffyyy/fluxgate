@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { apiKeys, tenants } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { generateApiKey } from "../utils/crypto.js";
+import { rateLimiter } from "../middleware/rateLimiter.js";
 
 export const keysRouter = new Hono();
 
@@ -12,6 +13,7 @@ keysRouter.post("/", async (c) => {
   try {
     const id = await c.req.json();
     const { tenantId } = id;
+    console.log(id);
     if (!tenantId) {
       return c.json(
         {
@@ -62,7 +64,7 @@ keysRouter.post("/", async (c) => {
 });
 
 // Protected test route
-keysRouter.get("/protected", authMiddleware, (c) => {
+keysRouter.get("/protected", authMiddleware, rateLimiter, (c) => {
   return c.json({
     tenantId: c.get("tenantId"),
     message: "Authentication successful",

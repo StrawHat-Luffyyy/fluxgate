@@ -3,6 +3,7 @@ import healthRouter from "./routes/health.js";
 import { db } from "./db/index.js";
 import { tenants } from "./db/schema.js";
 import { keysRouter } from "./routes/keys.js";
+import gatewayRouter from "./routes/gateway.js";
 
 const app = new Hono();
 
@@ -20,6 +21,8 @@ app.route("/health", healthRouter);
 // Keys route
 app.route("/keys", keysRouter);
 
+// Wildcard proxy router
+app.route("/gateway", gatewayRouter);
 // Protected test route
 app.post("/tenants", async (c) => {
   try {
