@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { extractFeatures } from "./extractor.js";
 import type { Env } from "../middleware/auth.js";
+import {publishRequestLog} from "../kafka/producer.js";
 
 const UPSTREAM_TARGET = "https://jsonplaceholder.typicode.com";
 
@@ -41,8 +42,7 @@ export const proxyHandler = async (c: Context<Env>) => {
       isNaN(responseByteSize) ? 0 : responseByteSize,
       startTime,
     );
-    console.log("Extracted Request Features:", JSON.stringify(features));
-
+    publishRequestLog(features);
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.delete("x-powered-by"); // Security: Hide upstream tech stack (Express, PHP, etc.)
     responseHeaders.delete("server");
