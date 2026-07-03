@@ -3,12 +3,14 @@ import app from "./app.js";
 import { env } from "./config/env.js";
 import { redis } from "./redis/client.js";
 import { connectProducer, disconnectProducer } from "./kafka/producer.js";
+import { startWebhookWorker } from "./queue/webhookWorker.js";
 
 await connectProducer();
 
 console.log(
   `FluxGate Edge Router starting on port ${env.PORT} in ${env.NODE_ENV} mode...`,
 );
+const worker = startWebhookWorker();
 
 serve({
   fetch: app.fetch,
@@ -20,6 +22,7 @@ const shutdown = async () => {
   try {
     await disconnectProducer();
     await redis.quit();
+    await worker.close();
     console.log("Shutdown complete.");
     process.exit(0);
   } catch (err) {

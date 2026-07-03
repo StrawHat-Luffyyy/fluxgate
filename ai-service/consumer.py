@@ -1,5 +1,6 @@
 import json
 import pickle
+import requests
 import numpy as np
 from confluent_kafka import Consumer, KafkaError
 
@@ -56,12 +57,12 @@ def start_consumer():
             print(f"Score={score:.4f}, Prediction={prediction}")
 
             if prediction == -1:
-                print(
-                    f"ANOMALY DETECTED! "
-                    f"Tenant: {features.get('tenantId')} | "
-                    f"Latency: {latency}ms | "
-                    f"Response: {res_size} bytes"
-                )
+                requests.post('http://localhost:3000/internal/alerts', json={
+                    "tenantId": features.get('tenantId'),
+                    "alertType": "anomaly_detected",
+                    "message": "Isolation Forest detected abnormal traffic",
+                    "data": { "latencyMs": latency, "requestByteSize": req_size }
+                })
             else:
                 print(
                     f"Traffic Normal | "

@@ -4,6 +4,7 @@ import { db } from "./db/index.js";
 import { tenants } from "./db/schema.js";
 import { keysRouter } from "./routes/keys.js";
 import gatewayRouter from "./routes/gateway.js";
+import internalRouter from "./routes/internal.js";
 
 const app = new Hono();
 
@@ -23,6 +24,8 @@ app.route("/keys", keysRouter);
 
 // Wildcard proxy router
 app.route("/gateway", gatewayRouter);
+// Internal routes
+app.route("/internal", internalRouter);
 // Protected test route
 app.post("/tenants", async (c) => {
   try {

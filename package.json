@@ -15,6 +15,7 @@
   "type": "module",
   "dependencies": {
     "@hono/node-server": "^2.0.6",
+    "bullmq": "^5.79.2",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.27",
