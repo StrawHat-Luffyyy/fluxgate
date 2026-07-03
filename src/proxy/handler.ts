@@ -42,7 +42,7 @@ export const proxyHandler = async (c: Context<Env>) => {
       isNaN(responseByteSize) ? 0 : responseByteSize,
       startTime,
     );
-    publishRequestLog(features);
+    await publishRequestLog(features);
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.delete("x-powered-by"); // Security: Hide upstream tech stack (Express, PHP, etc.)
     responseHeaders.delete("server");
