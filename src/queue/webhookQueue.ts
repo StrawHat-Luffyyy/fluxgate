@@ -1,5 +1,5 @@
-import { ConnectionOptions, Queue } from "bullmq";
-import { connection } from "./connection.js";
+import { Queue } from "bullmq";
+import { getRedisConnectionOptions } from "./connection.js";
 
 export interface WebhookPayload {
   tenantId: string;
@@ -9,7 +9,7 @@ export interface WebhookPayload {
 }
 
 export const webhookQueue = new Queue<WebhookPayload>("webhooks", {
-  connection  :  connection as ConnectionOptions,
+  connection: getRedisConnectionOptions(),
   defaultJobOptions: {
     attempts: 5,
     backoff: {
@@ -20,3 +20,4 @@ export const webhookQueue = new Queue<WebhookPayload>("webhooks", {
     removeOnFail: false,
   },
 });
+
