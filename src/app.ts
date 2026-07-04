@@ -5,8 +5,16 @@ import { tenants } from "./db/schema.js";
 import { keysRouter } from "./routes/keys.js";
 import gatewayRouter from "./routes/gateway.js";
 import internalRouter from "./routes/internal.js";
+import { register, metricsMiddleware } from "./monitoring/metrics.js";
 
 const app = new Hono();
+
+app.use("*", metricsMiddleware);
+
+app.get("/metrics", async (c) => {
+  c.header("Content-Type", register.contentType);
+  return c.text(await register.metrics());
+});
 
 // Middleware for logging request time
 app.use("*", async (c, next) => {
