@@ -1,0 +1,156 @@
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  DOCKER_IMAGE_NAME: fluxgate
+
+jobs:
+  ci:
+    name: Build & Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout source code
+      # ------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2. Setup pnpm
+      # ------------------------------------------------------------------
+      # pnpm/action-setup auto-detects version from packageManager field.
+      # Falls back to latest if not specified.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      # ------------------------------------------------------------------
+      # 3. Setup Node.js with pnpm dependency cache
+      # ------------------------------------------------------------------
+      # actions/setup-node caches the pnpm store directory, so subsequent
+      # runs skip downloading packages that haven't changed.
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      # ------------------------------------------------------------------
+      # 4. Install dependencies
+      # ------------------------------------------------------------------
+      # --frozen-lockfile ensures CI fails if lockfile is out of sync with
+      # package.json. This catches "works on my machine" issues where a
+      # developer forgot to commit an updated lockfile.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ------------------------------------------------------------------
+      # 5. Type check (TypeScript)
+      # ------------------------------------------------------------------
+      # --noEmit validates types without producing output files.
+      # This catches type errors that wouldn't surface until runtime.
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      # ------------------------------------------------------------------
+      # 6. Lint (placeholder)
+      # ------------------------------------------------------------------
+      # No linter is currently configured (no ESLint, Biome, or oxlint).
+      # When you add one, replace the echo with the lint command.
+      # Example: pnpm exec eslint . --max-warnings=0
+      - name: Lint
+        run: echo "No linter configured — skipping. Add ESLint or Biome to enable."
+
+      # ------------------------------------------------------------------
+      # 7. Test (placeholder)
+      # ------------------------------------------------------------------
+      # No test runner is currently configured (no vitest, jest, or mocha).
+      # The only test file is a k6 load test which requires infrastructure.
+      # When you add a test runner, replace the echo with the test command.
+      # Example: pnpm exec vitest run
+      - name: Test
+        run: echo "No test runner configured — skipping. Add Vitest or Jest to enable."
+
+      # ------------------------------------------------------------------
+      # 8. Build project
+      # ------------------------------------------------------------------
+      # Compiles TypeScript to JavaScript. Validates that the full build
+      # pipeline succeeds (not just type checking).
+      - name: Build
+        run: pnpm build
+
+      # ------------------------------------------------------------------
+      # 9. Build Docker image
+      # ------------------------------------------------------------------
+      # Validates the Dockerfile produces a valid image. Tags with the
+      # commit SHA for traceability.
+      - name: Build Docker image
+        run: |
+          docker build \
+            --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+            --tag ${{ env.DOCKER_IMAGE_NAME }}:ci \
+            .
+
+      # ------------------------------------------------------------------
+      # 10. Validate Docker image
+      # ------------------------------------------------------------------
+      # Smoke test: start the container and verify the health endpoint
+      # responds. Uses a mock DATABASE_URL since we don't have a real DB
+      # in CI — the container should at least start and bind the port.
+      # If your app crashes without a real DB connection, this will catch
+      # startup errors unrelated to external services.
+      - name: Validate Docker image
+        run: |
+          # Start container in detached mode with minimal env vars
+          docker run -d \
+            --name fluxgate-smoke \
+            -p 3000:3000 \
+            -e DATABASE_URL="postgresql://ci:ci@localhost:5432/ci" \
+            -e REDIS_URL="redis://localhost:6379" \
+            -e KAFKA_BROKER="localhost:9092" \
+            ${{ env.DOCKER_IMAGE_NAME }}:ci
+
+          # Wait for container to start (up to 15 seconds)
+          echo "Waiting for container to start..."
+          for i in $(seq 1 15); do
+            if docker exec fluxgate-smoke wget --no-verbose --tries=1 --spider http://localhost:3000/health 2>/dev/null; then
+              echo "Health check passed"
+              break
+            fi
+            if [ $i -eq 15 ]; then
+              echo " Container failed to become healthy"
+              echo "--- Container logs ---"
+              docker logs fluxgate-smoke
+              docker rm -f fluxgate-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Verify container is running as non-root user
+          CONTAINER_USER=$(docker exec fluxgate-smoke whoami)
+          if [ "$CONTAINER_USER" != "fluxgate" ]; then
+            echo " Container running as '$CONTAINER_USER' instead of 'fluxgate'"
+            docker rm -f fluxgate-smoke
+            exit 1
+          fi
+          echo " Running as non-root user: $CONTAINER_USER"
+
+          # Cleanup
+          docker rm -f fluxgate-smoke
+          echo "Docker validation complete"
