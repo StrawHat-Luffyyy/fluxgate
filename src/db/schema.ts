@@ -1,4 +1,10 @@
-import { pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 export const tenants = pgTable("tenants", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -20,3 +26,25 @@ export const apiKeys = pgTable("api_keys", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   expiresAt: timestamp("expires_at"),
 });
+
+export const gatewayRoutes = pgTable(
+  "gateway_routes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .references(() => tenants.id, { onDelete: "cascade" })
+      .notNull(),
+    pathPrefix: text("path_prefix").notNull(),
+    targetUrl: text("target_url").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => {
+    return {
+      tenantPathIdx: uniqueIndex("tenant_path_idx").on(
+        table.tenantId,
+        table.pathPrefix,
+      ),
+    };
+  },
+);

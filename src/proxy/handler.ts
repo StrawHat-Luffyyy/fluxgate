@@ -1,9 +1,11 @@
 import type { Context } from "hono";
 import { extractFeatures } from "./extractor.js";
 import type { Env } from "../middleware/auth.js";
-import {publishRequestLog} from "../kafka/producer.js";
-
-const UPSTREAM_TARGET = "https://jsonplaceholder.typicode.com";
+import { redis } from "../redis/client.js";
+import { db } from "../db/index.js";
+import { gatewayRoutes } from "../db/schema.js";
+import { eq, and } from "drizzle-orm";
+import { publishRequestLog } from "../kafka/producer.js";
 
 export const proxyHandler = async (c: Context<Env>) => {
   const startTime = Date.now();
@@ -11,9 +13,41 @@ export const proxyHandler = async (c: Context<Env>) => {
 
   // e.g., /gateway/todos/1 -> /todos/1
   const incomingPath = c.req.path.replace(/^\/gateway/, "");
+  const pathSegments = incomingPath.split("/");
+  const pathPrefix = `/${pathSegments[1] || ""} `;
+
+  const cacheKey = `fluxgate:route:${tenantId}:${pathPrefix}`;
+  let targetBaseUrl = await redis.get(cacheKey);
+
+  if (!targetBaseUrl) {
+    const [routeDef] = await db
+      .select()
+      .from(gatewayRoutes)
+      .where(
+        and(
+          eq(gatewayRoutes.tenantId, tenantId),
+          eq(gatewayRoutes.pathPrefix, pathPrefix),
+        ),
+      )
+      .limit(1);
+    if (!routeDef) {
+      return c.json(
+        {
+          error: "Not Found",
+          message: `No upstream route configured for path prefix ${pathPrefix}`,
+        },
+        404,
+      );
+    }
+    targetBaseUrl = routeDef.targetUrl;
+
+    await redis.setex(cacheKey, 300, targetBaseUrl);
+  }
+
+  const remainingPath = incomingPath.replace(pathPrefix, "");
   const targetUrl = new URL(
-    `${incomingPath}${c.req.header("x-original-search") || ""}`,
-    UPSTREAM_TARGET,
+    `${remainingPath}${c.req.header("x-original-search") || ""}`,
+    targetBaseUrl,
   ).toString();
 
   // Sanitize headers
@@ -30,6 +64,7 @@ export const proxyHandler = async (c: Context<Env>) => {
       body: ["GET", "HEAD"].includes(c.req.method) ? null : c.req.raw.body, // Pass the raw body stream directly. Null for GET/HEAD requests.
       duplex: "half", // @ts-ignore - Node fetch implementation detail: prevents duplicate duplex errors
     } as RequestInit & { duplex: "half" });
+
     const resContentLength = upstreamResponse.headers.get("content-length");
     const responseByteSize = resContentLength
       ? parseInt(resContentLength, 10)
@@ -42,7 +77,7 @@ export const proxyHandler = async (c: Context<Env>) => {
       isNaN(responseByteSize) ? 0 : responseByteSize,
       startTime,
     );
-    await publishRequestLog(features);
+    await publishRequestLog(features).catch(console.error);
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.delete("x-powered-by"); // Security: Hide upstream tech stack (Express, PHP, etc.)
     responseHeaders.delete("server");
@@ -53,10 +88,12 @@ export const proxyHandler = async (c: Context<Env>) => {
     });
   } catch (err) {
     console.error("Proxy Gateway Bad Gateway Error:", err);
-    return c.json({
-      error: "Bad Gateway",
-      message: "Upstream service unreachable",
-    } , 
-  502);
+    return c.json(
+      {
+        error: "Bad Gateway",
+        message: "Upstream service unreachable",
+      },
+      502,
+    );
   }
 };

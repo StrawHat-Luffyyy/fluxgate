@@ -6,6 +6,7 @@ import { keysRouter } from "./routes/keys.js";
 import gatewayRouter from "./routes/gateway.js";
 import internalRouter from "./routes/internal.js";
 import { register, metricsMiddleware } from "./monitoring/metrics.js";
+import adminRouter from "./routes/admin.js";
 
 const app = new Hono();
 
@@ -32,8 +33,13 @@ app.route("/keys", keysRouter);
 
 // Wildcard proxy router
 app.route("/gateway", gatewayRouter);
+
 // Internal routes
 app.route("/internal", internalRouter);
+
+// Admin routes
+app.route("/admin", adminRouter);
+
 // Protected test route
 app.post("/tenants", async (c) => {
   try {
