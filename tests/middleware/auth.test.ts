@@ -1,24 +1,25 @@
 import { describe, it, expect, vi } from "vitest";
 import { Hono } from "hono";
 import { authMiddleware } from "../../src/middleware/auth.js";
-const mockDrizzleQuery = {
-  select: () => mockDrizzleQuery,
-  from: () => mockDrizzleQuery,
-  where: () => mockDrizzleQuery,
-  limit: () => mockDrizzleQuery,
-  // This turns the mock into a "thenable" that awaits perfectly into an array
-  then: (onFulfilled: (value: any[]) => any) =>
-    onFulfilled([
-      {
-        tenantId: "fake-tenant-123",
-        expiresAt: null,
-      },
-    ]),
-};
-
-vi.mock("../../src/db/index.js", () => ({
-  db: mockDrizzleQuery,
-}));
+vi.mock("../../src/db/index.js", () => {
+  const mockDrizzleQuery: any = {
+    select: () => mockDrizzleQuery,
+    from: () => mockDrizzleQuery,
+    where: () => mockDrizzleQuery,
+    limit: () => mockDrizzleQuery,
+    // This turns the mock into a "thenable" that awaits perfectly into an array
+    then: (onFulfilled: (value: any[]) => any) =>
+      onFulfilled([
+        {
+          tenantId: "fake-tenant-123",
+          expiresAt: null,
+        },
+      ]),
+  };
+  return {
+    db: mockDrizzleQuery,
+  };
+});
 
 describe("Auth Middleware", () => {
   const testApp = new Hono();

@@ -18,7 +18,7 @@ describe("Health Route", () => {
     expect(res.status).toBe(404);
 
     const body = await res.json();
-    expect(body.error).toBe("Not Found");
+    expect(body.error).toBe("Route not found");
     expect(body.path).toBe("/does-not-exist");
   });
 });
