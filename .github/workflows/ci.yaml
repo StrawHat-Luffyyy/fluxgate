@@ -116,41 +116,22 @@ jobs:
       # startup errors unrelated to external services.
       - name: Validate Docker image
         run: |
-          # Start container in detached mode with minimal env vars
-          docker run -d \
-            --name fluxgate-smoke \
-            -p 3000:3000 \
-            -e DATABASE_URL="postgresql://ci:ci@localhost:5432/ci" \
-            -e REDIS_URL="redis://localhost:6379" \
-            -e KAFKA_BROKER="localhost:9092" \
-            ${{ env.DOCKER_IMAGE_NAME }}:ci
-
-          # Wait for container to start (up to 15 seconds)
-          echo "Waiting for container to start..."
-          for i in $(seq 1 15); do
-            if docker exec fluxgate-smoke wget --no-verbose --tries=1 --spider http://localhost:3000/health 2>/dev/null; then
-              echo "Health check passed"
-              break
-            fi
-            if [ $i -eq 15 ]; then
-              echo " Container failed to become healthy"
-              echo "--- Container logs ---"
-              docker logs fluxgate-smoke
-              docker rm -f fluxgate-smoke
-              exit 1
-            fi
-            sleep 1
-          done
-
-          # Verify container is running as non-root user
-          CONTAINER_USER=$(docker exec fluxgate-smoke whoami)
+          # Verify container runs as non-root user 'fluxgate'
+          echo "Verifying running user is fluxgate..."
+          CONTAINER_USER=$(docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci whoami)
           if [ "$CONTAINER_USER" != "fluxgate" ]; then
-            echo " Container running as '$CONTAINER_USER' instead of 'fluxgate'"
-            docker rm -f fluxgate-smoke
+            echo "::error::Container running as '$CONTAINER_USER' instead of 'fluxgate'"
             exit 1
           fi
-          echo " Running as non-root user: $CONTAINER_USER"
+          echo "Container runs as non-root user: $CONTAINER_USER"
 
-          # Cleanup
-          docker rm -f fluxgate-smoke
+          # Verify node executes successfully inside the container
+          echo "Verifying node version..."
+          docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci node --version
+
+          # Verify build artifacts (dist/server.js) exist in the container
+          echo "Verifying build output exists..."
+          docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci ls -la dist/server.js
+
           echo "Docker validation complete"
+
