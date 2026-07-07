@@ -1,0 +1,380 @@
+{
+  "info": {
+    "_postman_id": "e8fb2c31-4e4b-4c07-b3f4-00d867c00e12",
+    "name": "FluxGate API Gateway",
+    "description": "Comprehensive Postman collection for the FluxGate Core API Gateway routes. Includes automated environment variable extraction for Tenant IDs and API Keys.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "GET Health Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Retrieve the system uptime, state, and status timestamp."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Prometheus Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "metrics"
+              ]
+            },
+            "description": "Scrape raw Prometheus metrics (Request counters, response times, latency histograms)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Onboarding",
+      "item": [
+        {
+          "name": "POST Create Tenant",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const response = pm.response.json();",
+                  "if (response.success && response.data && response.data[0]) {",
+                  "    pm.collectionVariables.set(\"tenantId\", response.data[0].id);",
+                  "    console.log(\"Captured tenantId: \", response.data[0].id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Enterprise Tenant A\",\n  \"plan\": \"enterprise\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/tenants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tenants"
+              ]
+            },
+            "description": "Creates a new tenant and automatically stores the returned Tenant UUID inside the collection variables."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Generate API Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const response = pm.response.json();",
+                  "if (response.apiKey) {",
+                  "    pm.collectionVariables.set(\"apiKey\", response.apiKey);",
+                  "    console.log(\"Captured apiKey: \", response.apiKey);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantId\": \"{{tenantId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "keys"
+              ]
+            },
+            "description": "Generates a high-entropy API key for the newly created tenant ID, automatically updating the collection's auth `apiKey` variable."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Auth Protected Route",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{apiKey}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/keys/protected",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "keys",
+                "protected"
+              ]
+            },
+            "description": "Test verification of the generated bearer API key against rate limits and secure auth filters."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Rules",
+      "item": [
+        {
+          "name": "POST Register Route Mapping",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{apiKey}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pathPrefix\": \"/posts\",\n  \"targetUrl\": \"https://jsonplaceholder.typicode.com/posts\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/routes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "routes"
+              ]
+            },
+            "description": "Registers an upstream proxy mapping (e.g. `/posts` -> JSONPlaceholder `/posts`) for the authenticated tenant context."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Proxy Gateway",
+      "item": [
+        {
+          "name": "GET Gateway Forwarding",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{apiKey}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/gateway/posts/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gateway",
+                "posts",
+                "1"
+              ]
+            },
+            "description": "Proxies a GET request through the gateway to fetch details for post ID 1."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Gateway Forwarding",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{apiKey}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"FluxGate Dynamic Post\",\n  \"body\": \"This body is successfully piped through the reverse proxy stream.\",\n  \"userId\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/gateway/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gateway",
+                "posts"
+              ]
+            },
+            "description": "Proxies a POST request along with its payload to create a new resource on the upstream target."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT Gateway Forwarding",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{apiKey}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": 1,\n  \"title\": \"Updated Post Title\",\n  \"body\": \"This updated body is piped through the reverse proxy stream.\",\n  \"userId\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/gateway/posts/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gateway",
+                "posts",
+                "1"
+              ]
+            },
+            "description": "Proxies a PUT request along with its payload to update the resource with ID 1 upstream."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Internal Alerting",
+      "item": [
+        {
+          "name": "POST Queue Webhook Alert",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"alertType\": \"HIGH_LATENCY\",\n  \"message\": \"Gateway latency spike detected on endpoint /gateway/posts\",\n  \"data\": {\n    \"measuredLatency\": 1205,\n    \"threshold\": 1000\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/internal/alerts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "alerts"
+              ]
+            },
+            "description": "Enqueue a webhook alert job for microservice communication (returns `202 Accepted` and adds task to Redis queue)."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "tenantId",
+      "value": "YOUR_TENANT_ID_HERE",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "YOUR_API_KEY_HERE",
+      "type": "string"
+    }
+  ]
+}

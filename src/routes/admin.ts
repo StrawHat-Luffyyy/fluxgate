@@ -15,16 +15,25 @@ adminRouter.post("/routes", async (c) => {
     return c.json({ error: "Missing pathPrefix or targetUrl " }, 400);
   }
 
+  let normalizedPathPrefix = pathPrefix.trim();
+  if (!normalizedPathPrefix.startsWith("/")) {
+    normalizedPathPrefix = `/${normalizedPathPrefix}`;
+  }
+  normalizedPathPrefix = normalizedPathPrefix.replace(/\/+$/, "");
+  if (!normalizedPathPrefix || normalizedPathPrefix === "/") {
+    return c.json({ error: "Invalid pathPrefix" }, 400);
+  }
+
   const [newRoute] = await db
     .insert(gatewayRoutes)
     .values({
       tenantId,
-      pathPrefix,
+      pathPrefix: normalizedPathPrefix,
       targetUrl,
     })
     .returning();
 
-  const cacheKey = `fluxgate:route:${tenantId}:${pathPrefix}`;
+  const cacheKey = `fluxgate:route:${tenantId}:${normalizedPathPrefix}`;
   await redis.del(cacheKey);
 
   return c.json({ success: true, route: newRoute }, 201);

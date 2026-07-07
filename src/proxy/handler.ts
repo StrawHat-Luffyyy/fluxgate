@@ -14,7 +14,7 @@ export const proxyHandler = async (c: Context<Env>) => {
   // e.g., /gateway/todos/1 -> /todos/1
   const incomingPath = c.req.path.replace(/^\/gateway/, "");
   const pathSegments = incomingPath.split("/");
-  const pathPrefix = `/${pathSegments[1] || ""} `;
+  const pathPrefix = `/${pathSegments[1] || ""}`.trim();
 
   const cacheKey = `fluxgate:route:${tenantId}:${pathPrefix}`;
   let targetBaseUrl = await redis.get(cacheKey);
@@ -45,9 +45,13 @@ export const proxyHandler = async (c: Context<Env>) => {
   }
 
   const remainingPath = incomingPath.replace(pathPrefix, "");
+  // Remove leading slash from remainingPath to prevent stripping the path component of targetBaseUrl
+  const relativePath = remainingPath.startsWith("/") ? remainingPath.slice(1) : remainingPath;
+  const base = targetBaseUrl.endsWith("/") ? targetBaseUrl : `${targetBaseUrl}/`;
+
   const targetUrl = new URL(
-    `${remainingPath}${c.req.header("x-original-search") || ""}`,
-    targetBaseUrl,
+    `${relativePath}${c.req.header("x-original-search") || ""}`,
+    base,
   ).toString();
 
   // Sanitize headers
@@ -81,6 +85,8 @@ export const proxyHandler = async (c: Context<Env>) => {
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.delete("x-powered-by"); // Security: Hide upstream tech stack (Express, PHP, etc.)
     responseHeaders.delete("server");
+    responseHeaders.delete("content-encoding"); // Decompression is handled by Node fetch, so strip this to prevent client decoding errors
+    responseHeaders.delete("content-length");   // Length changes post-decompression, so let Hono recalculate it
 
     return new Response(upstreamResponse.body, {
       status: upstreamResponse.status,
