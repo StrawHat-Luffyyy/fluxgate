@@ -7,6 +7,8 @@ import gatewayRouter from "./routes/gateway.js";
 import internalRouter from "./routes/internal.js";
 import { register, metricsMiddleware } from "./monitoring/metrics.js";
 import adminRouter from "./routes/admin.js";
+import { rateLimiterMiddleware } from "./middleware/rateLimiter.js";
+import { authMiddleware } from "./middleware/auth.js";
 
 const app = new Hono();
 
@@ -74,6 +76,15 @@ app.post("/tenants", async (c) => {
     );
   }
 });
+// Test
+app.get(
+  "/test-rate-limit",
+  authMiddleware,
+  rateLimiterMiddleware(),
+  (c) => c.json({
+    success:true
+  })
+)
 
 // Custom 404 Handler
 app.notFound((c) => {

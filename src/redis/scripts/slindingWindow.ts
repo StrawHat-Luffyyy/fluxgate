@@ -1,9 +1,19 @@
 /**
- * KEYS[1]: Redis Sorted Set key (e.g., "ratelimit:tenant_abc")
- * ARGV[1]: Current timestamp (ms)
- * ARGV[2]: Window duration (ms)
- * ARGV[3]: Max allowed requests per window
- * ARGV[4]: Unique Request Salt (prevents collision overwrites)
+ * Sliding Window Rate Limiter
+ *
+ * KEYS[1] = Redis Sorted Set key
+ *
+ * ARGV[1] = Current timestamp (milliseconds)
+ * ARGV[2] = Window duration (milliseconds)
+ * ARGV[3] = Maximum requests
+ * ARGV[4] = Unique request ID
+ *
+ * Returns:
+ * {
+ *   allowed (1|0),
+ *   remainingRequests,
+ *   retryAfterMilliseconds
+ * }
  */
 
 export const SLIDING_WINDOW_LUA = `
@@ -11,24 +21,64 @@ export const SLIDING_WINDOW_LUA = `
   local now = tonumber(ARGV[1])
   local window = tonumber(ARGV[2])
   local limit = tonumber(ARGV[3])
-  local reqId = ARGV[4]
+  local requestId = ARGV[4]
 
+  -- Remove expired requests
   local clearBefore = now - window
+  redis.call(
+      'ZREMRANGEBYSCORE',
+      key,
+      '-inf',
+      clearBefore
+  )
 
-  -- 1. O(log(N)+M) - Drop all records older than the sliding window
-  redis.call('ZREMRANGEBYSCORE', key, '-inf', clearBefore)
-  -- 2. O(1) - Count current requests inside active window
-  local currentCount = redis.call('ZCARD', key)
+  -- Count requests in current window
+  local currentCount =
+      redis.call('ZCARD', key)
 
+  -- Process request
+  local allowed = 0
+  local remaining = 0
+  local retryAfter = 0
   if currentCount < limit then
-    -- 3a. ALLOWED: Log this request and refresh key expiration
-    local member = now .. ":" .. reqId
-    redis.call('ZADD', key, now, member)
-    redis.call('PEXPIRE', key, window)
-
-    return { 1, limit - currentCount - 1 }
+      local member =
+          now .. ":" .. requestId
+      redis.call(
+          'ZADD',
+          key,
+          now,
+          member
+      )
+      redis.call(
+          'PEXPIRE',
+          key,
+          window
+      )
+      allowed = 1
+      remaining = limit - currentCount - 1
   else
-    -- 3b. BLOCKED: Do not record the request
-    return { 0, 0 }
+      -- Find oldest request in active window
+      local oldest =
+          redis.call(
+              'ZRANGE',
+              key,
+              0,
+              0,
+              'WITHSCORES'
+          )
+      if oldest[2] then
+          retryAfter =
+              math.max(
+                  0,
+                  window - (now - tonumber(oldest[2]))
+              )
+      end
   end
-`;
+
+  -- Return standardized result
+  return {
+      allowed,
+      remaining,
+      retryAfter
+  }
+  `;
