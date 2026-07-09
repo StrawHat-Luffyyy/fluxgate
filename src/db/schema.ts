@@ -48,3 +48,13 @@ export const gatewayRoutes = pgTable(
     };
   },
 );
+
+export const users = pgTable("users" , {
+  id : uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id")
+    .references(() => tenants.id, { onDelete: "cascade" })
+    .notNull(),
+  email: text("email").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+})

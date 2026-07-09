@@ -9,6 +9,7 @@ import { register, metricsMiddleware } from "./monitoring/metrics.js";
 import adminRouter from "./routes/admin.js";
 import { rateLimiterMiddleware } from "./middleware/rateLimiter.js";
 import { authMiddleware } from "./middleware/auth.js";
+import authRouter from "./routes/auth.js";
 
 const app = new Hono();
 
@@ -41,6 +42,9 @@ app.route("/internal", internalRouter);
 
 // Admin routes
 app.route("/admin", adminRouter);
+
+// Auth routes
+app.route("/auth", authRouter);
 
 // Protected test route
 app.post("/tenants", async (c) => {
