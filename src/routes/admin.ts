@@ -3,11 +3,13 @@ import { db } from "../db/index.js";
 import { gatewayRoutes } from "../db/schema.js";
 import { authMiddleware, type Env } from "../middleware/auth.js";
 import { redis } from "../redis/client.js";
+import { requiredRole } from "../middleware/rbac.js";
+import { eq } from "drizzle-orm";
 
 const adminRouter = new Hono<Env>();
 adminRouter.use("*", authMiddleware);
 
-adminRouter.post("/routes", async (c) => {
+adminRouter.post("/routes", requiredRole(["admin"]), async (c) => {
   const tenantId = c.get("tenantId");
   const { pathPrefix, targetUrl } = await c.req.json();
 
@@ -39,4 +41,12 @@ adminRouter.post("/routes", async (c) => {
   return c.json({ success: true, route: newRoute }, 201);
 });
 
+adminRouter.get("/routes", requiredRole(["viewer"]), async (c) => {
+  const tenantId = c.get("tenantId");
+  const routes = await db
+    .select()
+    .from(gatewayRoutes)
+    .where(eq(gatewayRoutes.tenantId, tenantId));
+  return c.json({ success: true, routes });
+});
 export default adminRouter;
