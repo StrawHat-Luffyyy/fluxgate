@@ -5,7 +5,6 @@ import { env } from "../config/env.js";
 import { users } from "../db/schema.js";
 import { db } from "../db/index.js";
 import { eq } from "drizzle-orm";
-import type { Env } from "./auth.js";
 
 export type DashboardEnv = {
   Variables: {

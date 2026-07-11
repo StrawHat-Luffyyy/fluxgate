@@ -44,6 +44,34 @@
             "description": "Scrape raw Prometheus metrics (Request counters, response times, latency histograms)."
           },
           "response": []
+        },
+        {
+          "name": "GET Test Rate Limit",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{apiKey}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/test-rate-limit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "test-rate-limit"
+              ]
+            },
+            "description": "Test verification of rate limits and secure auth filters using the rate limit test route."
+          },
+          "response": []
         }
       ]
     },
@@ -208,6 +236,35 @@
             "description": "Registers an upstream proxy mapping (e.g. `/posts` -> JSONPlaceholder `/posts`) for the authenticated tenant context."
           },
           "response": []
+        },
+        {
+          "name": "GET List Route Mappings",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{apiKey}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/routes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "routes"
+              ]
+            },
+            "description": "Retrieves the list of registered proxy route mappings for the authenticated tenant context."
+          },
+          "response": []
         }
       ]
     },
@@ -354,6 +411,88 @@
               ]
             },
             "description": "Enqueue a webhook alert job for microservice communication (returns `202 Accepted` and adds task to Redis queue)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "POST Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@fluxgate.io\",\n  \"password\": \"password123\",\n  \"tenantId\": \"{{tenantId}}\",\n  \"role\": \"admin\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Registers a new user context (e.g. viewer or admin role) linked to a specific tenant ID."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@fluxgate.io\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Authenticates a dashboard user using email and password, establishing a HTTP-only session cookie."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Clears the user's active session cookie."
           },
           "response": []
         }

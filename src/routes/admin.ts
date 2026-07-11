@@ -1,13 +1,16 @@
 import { Hono } from "hono";
 import { db } from "../db/index.js";
 import { gatewayRoutes } from "../db/schema.js";
-import { authMiddleware, type Env } from "../middleware/auth.js";
+import {
+  dashBoardAuth,
+  type DashboardEnv,
+} from "../middleware/dashBoardAuth.js";
 import { redis } from "../redis/client.js";
 import { requiredRole } from "../middleware/rbac.js";
 import { eq } from "drizzle-orm";
 
-const adminRouter = new Hono<Env>();
-adminRouter.use("*", authMiddleware);
+const adminRouter = new Hono<DashboardEnv>();
+adminRouter.use("*", dashBoardAuth);
 
 adminRouter.post("/routes", requiredRole(["admin"]), async (c) => {
   const tenantId = c.get("tenantId");

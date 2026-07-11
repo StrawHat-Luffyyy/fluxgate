@@ -3,11 +3,58 @@ import { setCookie, deleteCookie } from "hono/cookie";
 import { sign } from "hono/jwt";
 import bcrypt from "bcryptjs";
 import { db } from "../db/index.js";
-import { users } from "../db/schema.js";
+import { users, tenants } from "../db/schema.js";
 import { env } from "../config/env.js";
 import { eq } from "drizzle-orm";
 
 const authRouter = new Hono();
+
+authRouter.post("/register", async (c) => {
+  const { email, password, tenantId, role } = await c.req.json();
+
+  if (!email || !password || !tenantId) {
+    return c.json({ error: "Email, password and tenantId required" }, 400);
+  }
+
+  const [tenant] = await db
+    .select()
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+
+  if (!tenant) {
+    return c.json({ error: "Tenant not found" }, 404);
+  }
+
+  const [existingUser] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (existingUser) {
+    return c.json({ error: "User already exists" }, 409);
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const [newUser] = await db
+    .insert(users)
+    .values({
+      email,
+      passwordHash,
+      tenantId,
+      role: role === "admin" ? "admin" : "viewer",
+    })
+    .returning({
+      id: users.id,
+      email: users.email,
+      tenantId: users.tenantId,
+      role: users.role,
+      createdAt: users.createdAt,
+    });
+
+  return c.json({ success: true, user: newUser }, 201);
+});
 
 authRouter.post("/login", async (c) => {
   const { email, password } = await c.req.json();
