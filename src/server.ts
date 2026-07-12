@@ -4,7 +4,12 @@ import { env } from "./config/env.js";
 import { redis } from "./redis/client.js";
 import { connectProducer, disconnectProducer } from "./kafka/producer.js";
 import { startWebhookWorker } from "./queue/webhookWorker.js";
+import { startTracing } from "./monitoring/tracing.js";
+import { initSentry } from "./monitoring/sentry.js";
 
+initSentry();
+
+await startTracing();
 await connectProducer();
 
 console.log(

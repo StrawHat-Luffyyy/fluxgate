@@ -9,6 +9,8 @@ const envSchema = z.object({
   REDIS_URL: z.string().url().default("redis://localhost:6379"), // Require a valid Redis URL connection string
   JWT_SECRET: z.string().min(32).default("default-jwt-secret-key"), // Require a JWT secret with a minimum length of 32 characters
   KAFKA_BROKER: z.string().default("localhost:19092"), // Require a valid Kafka broker URL connection string
+  OTLP_ENDPOINT: z.string().url().default("http://localhost:4318/v1/traces"), // Require a valid OTLP endpoint URL connection string
+  SENTRY_DSN: z.string().optional(), // Optional Sentry DSN for error tracking
 });
 
 const _env = envSchema.safeParse(process.env);

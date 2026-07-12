@@ -16,6 +16,13 @@
   "type": "module",
   "dependencies": {
     "@hono/node-server": "^2.0.6",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.78.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
+    "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-node": "^0.220.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
+    "@sentry/node": "^10.65.0",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.79.2",
     "dotenv": "^17.4.2",
