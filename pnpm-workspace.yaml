@@ -1,7 +1,10 @@
 packages:
   - '.'
+  - "frontend"
 
 allowBuilds:
   esbuild: true
   msgpackr-extract: true
   protobufjs: false
+  sharp: false
+  unrs-resolver: false

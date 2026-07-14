@@ -72,6 +72,24 @@
             "description": "Test verification of rate limits and secure auth filters using the rate limit test route."
           },
           "response": []
+        },
+        {
+          "name": "GET Debug Sentry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/debug-sentry",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "debug-sentry"
+              ]
+            },
+            "description": "Throws an intentional test exception to verify Sentry distributed trace exception capturing."
+          },
+          "response": []
         }
       ]
     },
@@ -493,6 +511,25 @@
               ]
             },
             "description": "Clears the user's active session cookie."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Active Keys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "keys"
+              ]
+            },
+            "description": "Fetches all active API keys for the currently authenticated tenant session (reads from cookie)."
           },
           "response": []
         }

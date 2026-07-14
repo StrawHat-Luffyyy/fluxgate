@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import healthRouter from "./routes/health.js";
 import { db } from "./db/index.js";
 import { tenants } from "./db/schema.js";
@@ -12,7 +13,17 @@ import { authMiddleware } from "./middleware/auth.js";
 import authRouter from "./routes/auth.js";
 
 const app = new Hono();
+app.use(
+  "*",
+  cors({
+    origin: "http://localhost:3001",
+    credentials: true,
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 
+// Metrics route
 app.use("*", metricsMiddleware);
 
 app.get("/metrics", async (c) => {
@@ -33,6 +44,7 @@ app.route("/health", healthRouter);
 
 // Keys route
 app.route("/keys", keysRouter);
+app.route("/api/keys", keysRouter);
 
 // Wildcard proxy router
 app.route("/gateway", gatewayRouter);
@@ -81,14 +93,15 @@ app.post("/tenants", async (c) => {
   }
 });
 // Test
-app.get(
-  "/test-rate-limit",
-  authMiddleware,
-  rateLimiterMiddleware(),
-  (c) => c.json({
-    success:true
-  })
-)
+app.get("/test-rate-limit", authMiddleware, rateLimiterMiddleware(), (c) =>
+  c.json({
+    success: true,
+  }),
+);
+
+app.get("/debug-sentry", () => {
+  throw new Error("Test Sentry Distributed Trace Exception");
+});
 
 // Custom 404 Handler
 app.notFound((c) => {
