@@ -11,6 +11,7 @@ import adminRouter from "./routes/admin.js";
 import { rateLimiterMiddleware } from "./middleware/rateLimiter.js";
 import { authMiddleware } from "./middleware/auth.js";
 import authRouter from "./routes/auth.js";
+import analyticsRouter from "./routes/analytics.js";
 
 const app = new Hono();
 app.use(
@@ -57,6 +58,9 @@ app.route("/admin", adminRouter);
 
 // Auth routes
 app.route("/auth", authRouter);
+
+// Analytics routes
+app.route("/analytics", analyticsRouter);
 
 // Protected test route
 app.post("/tenants", async (c) => {
