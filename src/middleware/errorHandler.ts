@@ -22,11 +22,11 @@ export const errorHandler: ErrorHandler = (err, c) => {
 
     return c.json(
       {
-        error: err.code,
-        message: err.message,
+        error: err.message,
+        code: err.code,
         requestId,
       },
-      err.statusCode as 400,
+      err.statusCode as any,
     );
   }
 
@@ -38,8 +38,8 @@ export const errorHandler: ErrorHandler = (err, c) => {
 
   return c.json(
     {
-      error: "INTERNAL_ERROR",
-      message: "An unexpected error occurred",
+      error: "An unexpected error occurred",
+      code: "INTERNAL_ERROR",
       requestId,
     },
     500,

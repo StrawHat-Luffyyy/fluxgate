@@ -116,10 +116,8 @@ app.get("/debug-sentry", () => {
 app.notFound((c) => {
   return c.json(
     {
-      error: "NOT_FOUND",
-      message: "Route not found",
+      error: "Route not found",
       path: c.req.path,
-      requestId: c.get("requestId"),
     },
     404,
   );
