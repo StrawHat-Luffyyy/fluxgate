@@ -1,8 +1,12 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches:
+      - main
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -11,53 +15,12 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  NODE_VERSION: "22"
 
 jobs:
-  # -----------------------------------------------
-  # Job 1: Verify — full test suite before deploy
-  # -----------------------------------------------
-  verify:
-    name: Verify
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Type check
-        run: pnpm exec tsc --noEmit
-
-      - name: Run tests
-        run: pnpm vitest run
-        env:
-          DATABASE_URL: "postgresql://user:password@localhost:5432/testdb"
-          NODE_ENV: "test"
-
-      - name: Build backend
-        run: pnpm run build
-
-  # -----------------------------------------------
-  # Job 2: Build & Push Docker Image to GHCR
-  # -----------------------------------------------
   deploy:
     name: Build & Push
-    needs: verify
+    # Only run if the triggering CI workflow run succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
