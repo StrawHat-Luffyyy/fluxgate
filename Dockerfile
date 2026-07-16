@@ -1,50 +1,43 @@
+FROM node:22-alpine AS builder
 
-FROM node:22-alpine AS deps
-
-RUN apk add --no-cache dumb-init
-
-RUN corepack enable && corepack prepare pnpm@9 --activate
+# Enable pnpm via Corepack
+RUN corepack enable pnpm
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml ./
+# Copy workspace definition and dependency lockfiles first for optimal layer caching
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY frontend/package.json ./frontend/package.json
+
+# Install all dependencies across the workspace
 RUN pnpm install --frozen-lockfile
 
+# Copy the entire source code
+COPY . .
 
-FROM deps AS builder
+# Build the TypeScript backend project
+RUN pnpm run build
 
-WORKDIR /app
-
-COPY tsconfig.json ./
-COPY src/ ./src/
-
-RUN pnpm build
-
+# Prune devDependencies across the workspace to keep image size tiny
 RUN pnpm prune --prod
 
-
+# ---------------------------------------
+# Stage 2: Production Runner
+# ---------------------------------------
 FROM node:22-alpine AS runner
-
-RUN addgroup --system --gid 1001 fluxgate && \
-  adduser --system --uid 1001 --ingroup fluxgate fluxgate
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-COPY --from=deps /usr/bin/dumb-init /usr/bin/dumb-init
+# Copy compiled JavaScript output and pruned production node_modules from builder
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/pnpm-workspace.yaml ./
 
-COPY --from=builder --chown=fluxgate:fluxgate /app/dist ./dist
-COPY --from=builder --chown=fluxgate:fluxgate /app/node_modules ./node_modules
-COPY --from=builder --chown=fluxgate:fluxgate /app/package.json ./
-
+# Expose standard Gateway port
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
-
-USER fluxgate
-
-ENTRYPOINT ["dumb-init", "--"]
-
+# Execute compiled server directly (No tsx/typescript needed in prod)
 CMD ["node", "dist/server.js"]
