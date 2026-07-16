@@ -1,6 +1,9 @@
 import { kafka } from "./client.js";
 import type { RequestFeatures } from "../proxy/extractor.js";
 import { propagation, context as otelContext } from "@opentelemetry/api";
+import { createChildLogger } from "../lib/logger.js";
+
+const log = createChildLogger("kafka-producer");
 
 export const producer = kafka.producer();
 export const TRAFFIC_TOPIC = "gateway.traffic.logs";
@@ -8,16 +11,16 @@ export const TRAFFIC_TOPIC = "gateway.traffic.logs";
 export const connectProducer = async () => {
   try {
     await producer.connect();
-    console.log("Kafka Producer connected securely.");
+    log.info("Kafka Producer connected securely");
   } catch (error) {
-    console.error("Failed to connect Kafka Producer:", error);
+    log.fatal({ err: error }, "Failed to connect Kafka Producer");
     process.exit(1);
   }
 };
 
 export const disconnectProducer = async () => {
   await producer.disconnect();
-  console.log("Kafka Producer disconnected.");
+  log.info("Kafka Producer disconnected");
 };
 
 /**
@@ -43,6 +46,6 @@ export const publishRequestLog = async (features: RequestFeatures) => {
       ],
     });
   } catch (error) {
-    console.error("Failed to publish request log to Kafka:", error);
+    log.error({ err: error, tenantId: features.tenantId }, "Failed to publish request log to Kafka");
   }
 };

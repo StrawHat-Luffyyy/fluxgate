@@ -24,7 +24,6 @@ export const extractFeatures = (
   startTime: number,
 ): RequestFeatures => {
   const reqContentLength = c.req.header("Content-Length");
-  console.log("Content-Length:", reqContentLength);
   const requestByteSize = reqContentLength ? parseInt(reqContentLength, 10) : 0;
 
   const clientIp =

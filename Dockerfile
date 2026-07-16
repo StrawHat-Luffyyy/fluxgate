@@ -1,43 +1,66 @@
-FROM node:22-alpine AS builder
+# --------------------------------------------------
+# Stage 1: Install Dependencies
+# --------------------------------------------------
+FROM node:22-alpine AS deps
 
-# Enable pnpm via Corepack
-RUN corepack enable pnpm
+RUN apk add --no-cache dumb-init wget
+RUN corepack enable
 
 WORKDIR /app
 
-# Copy workspace definition and dependency lockfiles first for optimal layer caching
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
-COPY frontend/package.json ./frontend/package.json
+# Copy dependency manifests + workspace config for layer caching
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
-# Install all dependencies across the workspace
-RUN pnpm install --frozen-lockfile
+# Install only the root workspace (backend) deps — skip the frontend workspace
+RUN pnpm install --frozen-lockfile --filter .
 
-# Copy the entire source code
-COPY . .
+# --------------------------------------------------
+# Stage 2: Build
+# --------------------------------------------------
+FROM deps AS builder
 
-# Build the TypeScript backend project
+WORKDIR /app
+
+COPY src/ ./src/
+COPY tsconfig.json ./
+
 RUN pnpm run build
 
-# Prune devDependencies across the workspace to keep image size tiny
-RUN pnpm prune --prod
+# Strip dev dependencies for the production image
+RUN pnpm prune --prod --config.confirmModulesPurge=false
 
-# ---------------------------------------
-# Stage 2: Production Runner
-# ---------------------------------------
+# --------------------------------------------------
+# Stage 3: Production Runtime
+# --------------------------------------------------
 FROM node:22-alpine AS runner
+
+LABEL org.opencontainers.image.title="FluxGate API Gateway" \
+      org.opencontainers.image.description="Edge-native API Gateway & Traffic Intelligence Platform" \
+      org.opencontainers.image.source="https://github.com/StrawHat-Luffyyy/fluxgate"
+
+RUN apk add --no-cache dumb-init wget
+
+RUN addgroup -S fluxgate && \
+    adduser -S fluxgate -G fluxgate
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copy compiled JavaScript output and pruned production node_modules from builder
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/pnpm-workspace.yaml ./
+# Copy only what's needed to run
+COPY --from=builder --chown=fluxgate:fluxgate /app/dist ./dist
+COPY --from=builder --chown=fluxgate:fluxgate /app/node_modules ./node_modules
+COPY --from=builder --chown=fluxgate:fluxgate /app/package.json ./package.json
 
-# Expose standard Gateway port
+USER fluxgate
+
 EXPOSE 3000
 
-# Execute compiled server directly (No tsx/typescript needed in prod)
+HEALTHCHECK --interval=30s \
+            --timeout=5s \
+            --start-period=10s \
+            --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+
+ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "dist/server.js"]

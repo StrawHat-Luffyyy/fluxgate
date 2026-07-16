@@ -16,7 +16,10 @@ const envSchema = z.object({
 const _env = envSchema.safeParse(process.env);
 
 if (!_env.success) {
-  console.error("Invalid environment variables:", _env.error.format());
+  // Cannot use pino logger here — env.ts is parsed before logger.ts can initialize
+  process.stderr.write(
+    `Invalid environment variables:\n${JSON.stringify(_env.error.format(), null, 2)}\n`,
+  );
   process.exit(1);
 }
 

@@ -1,76 +1,71 @@
-name: FluxGate Production CI/CD
+name: Deploy
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  NODE_VERSION: "22"
 
 jobs:
-  # ---------------------------------------
-  # Job 1: Test & Verify (CI)
-  # ---------------------------------------
+  # -----------------------------------------------
+  # Job 1: Verify — full test suite before deploy
+  # -----------------------------------------------
   verify:
-    name: Run Tests & Type Check
+    name: Verify
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
           version: 9
-          run_install: false
 
-      - name: Get pnpm store directory
-        shell: bash
-        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
         with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Type Check
-        run: pnpm tsc --noEmit
+      - name: Type check
+        run: pnpm exec tsc --noEmit
 
-      - name: Run Vitest Suite
+      - name: Run tests
         run: pnpm vitest run
+        env:
+          DATABASE_URL: "postgresql://user:password@localhost:5432/testdb"
+          NODE_ENV: "test"
 
-      - name: Build Backend
+      - name: Build backend
         run: pnpm run build
 
-  # ---------------------------------------
-  # Job 2: Build & Deploy Docker Image (CD)
-  # Only runs on push to main AFTER verify passes!
-  # ---------------------------------------
+  # -----------------------------------------------
+  # Job 2: Build & Push Docker Image to GHCR
+  # -----------------------------------------------
   deploy:
-    name: Build Docker Image & Deploy
+    name: Build & Push
     needs: verify
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
@@ -83,7 +78,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for Docker
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -91,9 +86,10 @@ jobs:
           tags: |
             type=raw,value=latest
             type=sha,format=long
+            type=ref,event=branch
 
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
+      - name: Build and push
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -101,13 +97,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
 
-      - name: Trigger Live Production Rollout (Webhook)
-        # In a real deployment, you ping your hosting platform's deploy webhook
-        # e.g., Railway, Render, or an ArgoCD Kubernetes cluster
+      - name: Trigger deployment
         if: env.DEPLOY_WEBHOOK_URL != ''
         env:
           DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
         run: |
-          echo "🚀 Triggering zero-downtime deployment webhook..."
-          curl -X POST "$DEPLOY_WEBHOOK_URL"
+          curl -sf -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"image":"${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}","sha":"${{ github.sha }}"}' \
+            "$DEPLOY_WEBHOOK_URL"

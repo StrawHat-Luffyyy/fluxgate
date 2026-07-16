@@ -1,12 +1,12 @@
 import * as Sentry from "@sentry/node";
 import { env } from "../config/env.js";
+import { createChildLogger } from "../lib/logger.js";
 
+const log = createChildLogger("sentry");
 
 export const initSentry = () => {
   if (!env.SENTRY_DSN) {
-    console.log(
-      "SENTRY_DSN not provided. Exception monitoring disabled for local dev.",
-    );
+    log.info("SENTRY_DSN not provided. Exception monitoring disabled for local dev");
     return;
   }
 
@@ -17,7 +17,7 @@ export const initSentry = () => {
     attachStacktrace: true,
   });
 
-  console.log("Sentry exception monitoring activated.");
+  log.info("Sentry exception monitoring activated");
 };
 
 /**
@@ -28,7 +28,7 @@ export const captureException = (
   context?: Record<string, any>,
 ) => {
   if (!env.SENTRY_DSN) {
-    console.error("[Local Exception Capture]:", err, context);
+    log.error({ err, context }, "Local exception capture");
     return;
   }
   Sentry.withScope((scope) => {

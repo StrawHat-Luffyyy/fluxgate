@@ -1,8 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { createMiddleware } from "hono/factory";
 import healthRouter from "./routes/health.js";
-import { db } from "./db/index.js";
-import { tenants } from "./db/schema.js";
 import { keysRouter } from "./routes/keys.js";
 import gatewayRouter from "./routes/gateway.js";
 import internalRouter from "./routes/internal.js";
@@ -12,8 +11,23 @@ import { rateLimiterMiddleware } from "./middleware/rateLimiter.js";
 import { authMiddleware } from "./middleware/auth.js";
 import authRouter from "./routes/auth.js";
 import analyticsRouter from "./routes/analytics.js";
+import tenantsRouter from "./routes/tenants.js";
+import { errorHandler } from "./middleware/errorHandler.js";
+import { createChildLogger } from "./lib/logger.js";
 
-const app = new Hono();
+const log = createChildLogger("http");
+
+type AppEnv = {
+  Variables: {
+    requestId: string;
+  };
+};
+
+const app = new Hono<AppEnv>();
+
+// --- Global Middleware Pipeline ---
+
+// CORS (credentials: true preserved for HttpOnly cookie auth flow)
 app.use(
   "*",
   cors({
@@ -24,7 +38,18 @@ app.use(
   }),
 );
 
-// Metrics route
+// Request ID injection
+app.use(
+  "*",
+  createMiddleware<AppEnv>(async (c, next) => {
+    const requestId = crypto.randomUUID();
+    c.set("requestId", requestId);
+    c.header("X-Request-Id", requestId);
+    await next();
+  }),
+);
+
+// Prometheus metrics
 app.use("*", metricsMiddleware);
 
 app.get("/metrics", async (c) => {
@@ -32,13 +57,24 @@ app.get("/metrics", async (c) => {
   return c.text(await register.metrics());
 });
 
-// Middleware for logging request time
+// Structured request logging
 app.use("*", async (c, next) => {
   const start = Date.now();
   await next();
   const ms = Date.now() - start;
-  console.log(`[${c.req.method}] ${c.req.url} - ${ms}ms`);
+  log.info(
+    {
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status,
+      latencyMs: ms,
+      requestId: c.get("requestId"),
+    },
+    `${c.req.method} ${c.req.path}`,
+  );
 });
+
+// --- Routes ---
 
 // Health route
 app.route("/health", healthRouter);
@@ -62,41 +98,10 @@ app.route("/auth", authRouter);
 // Analytics routes
 app.route("/analytics", analyticsRouter);
 
+// Tenants route (extracted from inline handler)
+app.route("/tenants", tenantsRouter);
+
 // Protected test route
-app.post("/tenants", async (c) => {
-  try {
-    const body = await c.req.json();
-    const { name, plan } = body;
-    if (!name || !plan) {
-      return c.json(
-        {
-          success: false,
-          message: "Missing required fields",
-        },
-        400,
-      );
-    }
-    const tenant = await db.insert(tenants).values({ name, plan }).returning();
-    return c.json(
-      {
-        success: true,
-        message: "Tenant created successfully",
-        data: tenant,
-      },
-      201,
-    );
-  } catch (error) {
-    console.error(error);
-    return c.json(
-      {
-        success: false,
-        message: "Failed to create tenant",
-      },
-      500,
-    );
-  }
-});
-// Test
 app.get("/test-rate-limit", authMiddleware, rateLimiterMiddleware(), (c) =>
   c.json({
     success: true,
@@ -111,23 +116,16 @@ app.get("/debug-sentry", () => {
 app.notFound((c) => {
   return c.json(
     {
-      error: "Route not found",
+      error: "NOT_FOUND",
+      message: "Route not found",
       path: c.req.path,
+      requestId: c.get("requestId"),
     },
     404,
   );
 });
 
-// Global Error Handler
-app.onError((err, c) => {
-  console.error("Unhandled error:", err);
-  return c.json(
-    {
-      error: "Internal Server Error",
-      message: err.message,
-    },
-    500,
-  );
-});
+// Centralized Error Handler
+app.onError(errorHandler);
 
 export default app;
