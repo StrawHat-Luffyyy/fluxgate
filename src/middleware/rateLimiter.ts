@@ -33,7 +33,9 @@ const RATE_LIMIT_SCRIPTS = {
   sliding_window: SLIDING_WINDOW_LUA,
 } as const;
 
-export const rateLimiterMiddleware = (): MiddlewareHandler<Env> => {
+export const rateLimiterMiddleware = (
+  customConfig?: Partial<RateLimitConfig>,
+): MiddlewareHandler<Env> => {
   return async (c, next) => {
     const tenantId = c.get("tenantId");
 
@@ -48,15 +50,7 @@ export const rateLimiterMiddleware = (): MiddlewareHandler<Env> => {
     }
 
     const path = c.req.path;
-
-    /**
-     * TODO
-     *
-     * Replace DEFAULT_CONFIG with
-     * tenant-specific configuration
-     * from Postgres.
-     */
-    const config = DEFAULT_CONFIG;
+    const config: RateLimitConfig = { ...DEFAULT_CONFIG, ...customConfig };
     const redisKey = `fluxgate:ratelimit:${tenantId}:${path}`;
     const script = RATE_LIMIT_SCRIPTS[config.strategy];
 
@@ -118,10 +112,14 @@ export const rateLimiterMiddleware = (): MiddlewareHandler<Env> => {
           429,
         );
       }
-      
+
       await next();
     } catch (err) {
-      log.error({ err, tenantId, path }, "Rate limiter infrastructure failure");
+      log.error(
+        { err, tenantId, path, mode: "fail-open" },
+        "Redis rate limiter infrastructure failure — failing open to preserve gateway availability",
+      );
+      c.header("X-RateLimit-Fallback", "fail-open");
       await next();
     }
   };

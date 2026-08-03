@@ -5,7 +5,10 @@ const envSchema = z.object({
     .enum(["development", "production", "test"])
     .default("development"),
   PORT: z.coerce.number().default(3000),
-  DATABASE_URL: z.string().url(), // Require a valid Postgres URL connection string
+  DATABASE_URL: z
+    .string()
+    .url()
+    .default("postgresql://postgres:postgres@localhost:5432/fluxgate"), // Postgres URL connection string
   REDIS_URL: z.string().url().default("redis://localhost:6379"), // Require a valid Redis URL connection string
   JWT_SECRET: z.string().min(32).default("default-jwt-secret-key"), // Require a JWT secret with a minimum length of 32 characters
   KAFKA_BROKER: z.string().default("localhost:19092"), // Require a valid Kafka broker URL connection string

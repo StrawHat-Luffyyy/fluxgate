@@ -1,200 +1,118 @@
-# FluxGate: Edge-Native API Gateway & Traffic Intelligence Platform
+# FluxGate — Edge-Native API Gateway & Anomaly Intelligence Platform
 
-[![CI/CD Status](https://github.com/StrawHat-Luffyyy/fluxgate/actions/workflows/ci.yaml/badge.svg)](https://github.com/StrawHat-Luffyyy/fluxgate/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-
-FluxGate is an enterprise-grade, edge-native API Gateway and Traffic Intelligence platform. Built for ultra-low latency routing, multi-tenant secure credentialing, and real-time AI-powered anomaly detection, FluxGate decouples the hot path of request proxying from downstream telemetry processing.
+FluxGate is a high-performance, multi-tenant API Gateway built with TypeScript, Node.js, and Hono, featuring atomic Redis-backed rate limiting across multiple algorithms (Token Bucket, Leaky Bucket, Sliding Window). It asynchronously streams HTTP traffic telemetry to Apache Kafka, feeding a Python microservice powered by an Isolation Forest machine learning model and SHAP (SHapley Additive exPlanations) for real-time threat detection and root-cause explainability.
 
 ---
 
-## 1. Executive Summary
-
-### The Business Problem
-Modern enterprises process billions of API calls daily. Traditional API gateway architectures fail when forced to perform real-time security checking, rate limiting, and behavioral analysis inline. Performing complex database queries or running machine learning algorithms on the request execution path degrades latency, limits maximum throughput, and compromises reliability. Furthermore, client-side token storage exposes critical credentials to cross-site scripting (XSS) attacks, while centralized rate limiters suffer from race conditions under high concurrency.
-
-### The FluxGate Solution
-FluxGate addresses these scaling bottlenecks using a **polyglot, event-driven microservice architecture**:
-- **Zero-Buffering Proxy**: High-throughput routing built on Node.js/Hono using web streams.
-- **Atomic Rate Limiting**: Redis-backed Lua scripts execute Sliding Window, Token Bucket, and Leaky Bucket algorithms in a single network round-trip, avoiding race conditions.
-- **Decoupled Telemetry**: Telemetry collection is moved off the request-response thread using an asynchronous, fire-and-forget Kafka producer.
-- **Asynchronous Traffic Intelligence**: A Python service consumes the Kafka stream, running unsupervised anomaly detection (Isolation Forest) with SHAP mathematical explanations, ensuring threat detection does not impact gateway latency.
-- **Resilient Tenant Alerts**: BullMQ processes detected threat profiles and schedules webhook dispatches to affected tenants with exponential backoff.
-
----
-
-## 2. System Architecture
+## Architecture
 
 ```mermaid
-graph TD
-    Client[Client Browser / API Client] -->|HTTP / HTTPS| Gateway[Hono API Gateway]
-    Gateway -->|1. Validate Auth & Rate Limit| Redis[(Redis Cache / Lua Scripts)]
-    Gateway -->|2. Route Resolution| Pg[(PostgreSQL / Drizzle ORM)]
-    Gateway -->|3. Zero-Buffer Pipe| Upstream[Upstream Target API]
-    Gateway -->|4. Fire-and-Forget telemetry| Kafka[Kafka / Redpanda Broker]
+flowchart TD
+    Client[Client Request] -->|HTTP/HTTPS| Gateway[FluxGate Hono Gateway]
     
-    subgraph Traffic Intelligence Service
-        Kafka -->|5. Stream logs| PythonAI[Python AI Consumer]
-        PythonAI -->|6. Unsupervised Inference| IsoForest[Isolation Forest Model]
-        PythonAI -->|7. Explain Anomaly| SHAP[SHAP Explainer]
+    subgraph Core Gateway Pipeline
+        Gateway --> Auth[Auth & Tenant Middleware]
+        Auth --> RateLimiter{Redis Rate Limiter}
+        RateLimiter -->|Lua Script Atomicity| Redis[(Redis Cache & State)]
+        RateLimiter -->|Fail-Open Fallback| Proxy[Proxy Handler]
     end
+
+    Proxy -->|Proxied Request| Upstream[Upstream Backend Services]
     
-    PythonAI -->|8. Alert POST| Gateway
-    Gateway -->|9. Enqueue Alert| BullMQ[BullMQ Webhook Queue]
-    BullMQ -->|10. Retry with Backoff| Webhook[Tenant Webhook Endpoint]
-    
-    subgraph Dashboard
-        DashboardClient[Next.js Client SPA] -->|Auth cookies / React Query| Gateway
+    subgraph Async Telemetry & AI Anomaly Pipeline
+        Proxy -.->|Async Non-Blocking Stream| Kafka[Kafka Broker: gateway.traffic.logs]
+        Kafka --> PythonConsumer[Python AI Consumer]
+        PythonConsumer --> IsoForest[Isolation Forest Inference]
+        IsoForest -->|Anomaly Flagged| SHAP[SHAP Feature Explainer]
+        SHAP -->|Alert Webhook| InternalAlerts[FluxGate Alert Webhook / DLQ]
     end
 ```
 
 ---
 
-## 3. "Life of a Request" Execution Flow
+## Why These Design Choices?
 
-Tracing a single HTTP request sequentially through the FluxGate ecosystem:
+### 1. Three Distinct Rate-Limiting Algorithms
+Different API workloads require different traffic-shaping guarantees:
+- **Token Bucket**: Allows sudden traffic bursts up to bucket capacity while enforcing a steady refill rate. Ideal for general-purpose REST APIs.
+- **Leaky Bucket**: Smooths out bursty incoming requests into a steady, uniform output rate. Ideal for protecting downstream background queues and database writes.
+- **Sliding Window Log**: Uses Redis Sorted Sets to maintain timestamp logs, preventing boundary-burst attacks (where clients send double limits across fixed window edges). Ideal for high-security endpoints.
 
-```
-[Client] ➔ [Hono Gateway] ➔ [Redis] ➔ [Upstream API] ➔ [Kafka] ➔ [Python AI] ➔ [BullMQ] ➔ [Tenant Webhook]
-```
+### 2. Single-Threaded Redis Lua Scripts for Atomicity
+Rate limiting requires atomic "check-and-update" logic across distributed gateway nodes. Executing rate-limiting logic inside Redis Lua scripts guarantees single-threaded atomic execution with **zero race conditions**, eliminating over-limit traffic leaks without requiring heavy client-side mutex locking.
 
-1. **Ingress & Authentication Check**:
-   - The Client initiates an HTTP request to `/gateway/:pathPrefix/*` with an `Authorization: Bearer <key>` header.
-   - Hono interceptors check the local cache. If invalid or missing, it queries PostgreSQL via Drizzle ORM to verify the API key hash (`SHA-256`) and resolve tenant mapping.
-
-2. **Atomic Rate Limiting Check**:
-   - The gateway executes a Redis transaction running the configured strategy's Lua script (e.g., Token Bucket).
-   - Redis evaluates the key `fluxgate:ratelimit:<tenantId>:<path>`. It returns `[allowed, remaining, retryAfter]`.
-   - If `allowed == 0`, Hono returns `429 Too Many Requests` instantly.
-
-3. **Dynamic Upstream Route Resolution**:
-   - The gateway checks the dynamic route cache in Redis (`fluxgate:route:<tenantId>:<pathPrefix>`).
-   - On a cache miss, it reads from PostgreSQL, caches the target URL with a 300-second TTL, constructs the target endpoint, and clones incoming headers.
-
-4. **Zero-Buffer Streaming Proxy**:
-   - Hono initiates an upstream HTTP fetch with `duplex: 'half'`. The request body is piped directly to the upstream server.
-   - The upstream response is piped back to the client chunk-by-chunk using Web Streams, bypassing memory-buffered arrays to minimize memory footprint.
-
-5. **Asynchronous Telemetry Dispatch**:
-   - Once the response is sent, the gateway extracts metadata (`latencyMs`, `requestByteBySize`, `responseByteBySize`, `statusCode`, `clientIp`).
-   - The gateway's Kafka producer publishes this event to `gateway.traffic.logs`. The active OpenTelemetry trace context is injected into the Kafka message headers to preserve the distributed transaction.
-
-6. **Python AI Consumer Stream Parsing**:
-   - The Python AI consumer polls the Kafka topic. It extracts the OTel trace context from headers, linking all downstream spans.
-   - The metrics are processed into a vector: `[[requestByteSize, responseByteSize, latencyMs]]`.
-
-7. **Inference & Explainability (SHAP)**:
-   - The pre-trained `Isolation Forest` model predicts normalcy.
-   - **If Normal**: The log is compiled and stored.
-   - **If Anomaly (Prediction == -1)**: A `TreeExplainer` calculates SHAP values. The feature with the highest absolute SHAP value is identified as the anomaly driver.
-
-8. **Alert Generation & Webhook Enqueueing**:
-   - The Python service sends a POST request to `/internal/alerts`.
-   - The internal router pushes a `send-webhook` job to BullMQ containing the anomaly score, driver, and context.
-
-9. **Webhook Delivery with Backoff**:
-   - A BullMQ worker retrieves the job, constructs the webhook payload, and POSTs it to the tenant's configured destination.
-   - If the endpoint fails (non-2xx), the worker retries the job up to 5 times using an exponential backoff strategy (`delay = attempts * 1000ms`).
+### 3. Isolation Forest + SHAP for Anomaly Detection
+Traditional security rules miss novel zero-day attacks and traffic anomalies. **Isolation Forest** isolates anomalies by randomly partitioning feature space (request sizes, response sizes, latencies), working effectively without requiring pre-labeled threat datasets. **SHAP** provides instant feature attribution so operators know precisely *which feature* (e.g. latency spike vs abnormal response byte size) triggered the alert.
 
 ---
 
-## 4. Key Architectural Trade-Offs
+## Failure Modes & Graceful Degradation
 
-| Decision Axis | Choice | Alternative Considered | Engineering Rationale |
-| :--- | :--- | :--- | :--- |
-| **Payload Handling** | **Streaming** | Buffering | Buffering loads the entire request body into RAM before forwarding. Under high concurrency or during file uploads, memory consumption scales linearly with payload size, risking Out-Of-Memory (OOM) crashes. Streaming routes chunks directly to the socket, maintaining near-zero memory utilization. |
-| **State Operations** | **Redis Lua** | Node.js Logic | Evaluating rate limits inside Node.js requires multiple round-trips (Get limit, increment, check, write). Under load, race conditions (time-of-check to time-of-use) allow clients to bypass limits. Lua scripts run atomically inside Redis's single-threaded core, preventing race conditions. |
-| **Token Storage** | **HttpOnly Cookies** | LocalStorage | LocalStorage is vulnerable to Cross-Site Scripting (XSS) attacks; any injected script can read the token. HttpOnly cookies are inaccessible to JavaScript, protecting sessions from credential theft. Cross-site Request Forgery (CSRF) is mitigated by enforcing `SameSite: Strict`. |
-| **Telemetry Pipe** | **Kafka / Redpanda** | Direct Database Logging | Writing traffic logs directly to PostgreSQL or Sentry synchronously during the request cycle blocks the event loop. Kafka decouples ingestion from storage, allowing the gateway to handle high-throughput traffic without wait states. |
-
----
-
-## 5. Directory Layout
-
-```
-fluxgate/
-├── ai-service/             # Python AI Anomaly Detection service (Isolation Forest & SHAP)
-├── drizzle/                # Database migrations and schema settings
-├── frontend/               # Next.js SPA dashboard
-│   ├── app/
-│   │   ├── components/     # Componentized UI (StatCards, Charts, Skeletons)
-│   │   ├── hooks/          # React Query query/mutation abstractions
-│   │   └── lib/            # Centralized API fetch wrapper with cookie forwarding
-├── src/                    # Node.js/Hono Gateway Core
-│   ├── config/             # Zod environment schemas
-│   ├── db/                 # Drizzle client configuration
-│   ├── kafka/              # Kafka producer client
-│   ├── middleware/         # Centralized error handler, auth, rate limiters, metrics
-│   ├── monitoring/         # OpenTelemetry, Sentry, and Prometheus registries
-│   ├── queue/              # BullMQ queue & worker configuration
-│   ├── redis/              # Redis client & Lua rate-limiting scripts
-│   ├── routes/             # Thin controllers forwarding to services
-│   └── services/           # Decoupled business logic controllers
-├── Dockerfile              # Multi-stage optimized Node.js Alpine build
-└── docker-compose.yml      # Infrastructure configurations (Postgres, Redis, Redpanda)
-```
+| Failure Scenario | Gateway Behavior | Justification / Trade-off |
+| :--- | :--- | :--- |
+| **Redis Unavailable** | **Fail-Open** (`X-RateLimit-Fallback: fail-open`) | In an edge API Gateway, high availability is prioritized over rate-limit enforcement. Dropping client traffic during a Redis outage converts a minor cache failure into a total gateway blackout. |
+| **Kafka Consumer Crash / Bad Payloads** | **DLQ Logging & At-Least-Once Delivery** | Malformed payloads are caught and logged to Dead-Letter Queue (DLQ) without crashing the worker. On restart, uncommitted Kafka offsets are reprocessed so no traffic telemetry is lost. |
+| **Python AI Service Offline** | **100% Unaffected Request Proxying** | Telemetry emission is strictly asynchronous and non-blocking (`publishRequestLog`). The core gateway continues routing traffic seamlessly even if the AI service is completely down. |
 
 ---
 
-## 6. Local Development Setup
+## Load Test Results
 
-### Prerequisites
-- Node.js v22+
-- Python 3.12+
-- Docker & Docker Compose
+Evaluated across **50, 200, 500, and 1000 concurrent workers** with a target threshold of 200 requests per window using `npx tsx tests/load-test-runner.ts`.
 
-### 1. Provision Infrastructure
-Start Redis, Postgres, and Redpanda (Kafka):
+### Benchmark Environment Specs
+- **CPU**: 12th Gen Intel(R) Core(TM) i5-12450H (12 logical cores)
+- **RAM**: 15.7 GB
+- **OS**: Windows x64 / Node.js v24.11.1 / Redis 7
+
+### Performance Metrics Table
+
+| Algorithm | Concurrency (Workers) | Sustained Req/Sec | p50 Latency (ms) | p95 Latency (ms) | p99 Latency (ms) | Throttling Accuracy |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Sliding Window** | 50 | **38,859 req/s** | 0.26 ms | 0.42 ms | 0.91 ms | **100.0% (0 drift)** |
+| **Sliding Window** | 200 | **1,96,715 req/s** | 0.56 ms | 0.82 ms | 0.84 ms | **100.0% (0 drift)** |
+| **Sliding Window** | 500 | **1,91,961 req/s** | 1.47 ms | 2.35 ms | 2.40 ms | **100.0% (0 drift)** |
+| **Sliding Window** | 1000 | **1,04,916 req/s** | 5.03 ms | 8.73 ms | 8.84 ms | **100.0% (0 drift)** |
+| **Token Bucket** | 50 | **79,758 req/s** | 0.25 ms | 0.43 ms | 0.59 ms | **100.0% (0 drift)** |
+| **Token Bucket** | 200 | **1,98,807 req/s** | 0.55 ms | 0.66 ms | 0.67 ms | **100.0% (0 drift)** |
+| **Token Bucket** | 500 | **2,84,075 req/s** | 0.91 ms | 1.37 ms | 1.39 ms | **100.0% (0 drift)** |
+| **Token Bucket** | 1000 | **2,19,833 req/s** | 1.45 ms | 3.99 ms | 4.08 ms | **100.0% (0 drift)** |
+| **Leaky Bucket** | 50 | **1,29,032 req/s** | 0.12 ms | 0.22 ms | 0.35 ms | **100.0% (0 drift)** |
+| **Leaky Bucket** | 200 | **1,80,294 req/s** | 0.46 ms | 0.97 ms | 1.00 ms | **100.0% (0 drift)** |
+| **Leaky Bucket** | 500 | **2,40,697 req/s** | 1.13 ms | 1.76 ms | 1.82 ms | **100.0% (0 drift)** |
+| **Leaky Bucket** | 1000 | **2,60,885 req/s** | 1.94 ms | 3.16 ms | 3.25 ms | **100.0% (0 drift)** |
+
+---
+
+## Free-Tier Cloud Deployment Topology
+
+### Recommended Architecture (Railway / Render / Fly.io)
+- **API Gateway**: Deployed as containerized service on Render or Railway.
+- **PostgreSQL**: Managed free-tier DB on Neon or Supabase.
+- **Redis Cache & State**: Upstash Redis or Render Redis free tier.
+- **Kafka / Telemetry Stream**: Upstash Kafka serverless topic or lightweight HTTP queue fallback.
+
+### Known Limitations (Deployed Demo vs Local Architecture)
+1. **Serverless Redis Latency**: Deployed cloud instances over network connections introduce ~10-20ms network RTT compared to <1ms local Docker RTT.
+2. **Simplified Kafka Stream**: Single-instance cloud demos can mock Kafka streams via in-memory event emitters when managed Kafka cluster free quotas are exceeded.
+
+---
+
+## Local Quickstart & Testing
+
 ```bash
-docker compose up -d
-```
-
-### 2. Configure Environment Variables
-Create a `.env` file in the root directory:
-```env
-NODE_ENV=development
-PORT=3000
-DATABASE_URL=postgresql://fluxgate:fluxgate@localhost:5432/fluxgate
-REDIS_URL=redis://localhost:6379
-JWT_SECRET=super-secret-jwt-key-minimum-32-characters
-KAFKA_BROKER=localhost:19092
-OTLP_ENDPOINT=http://localhost:4318/v1/traces
-```
-
-### 3. Initialize the Database
-Run Drizzle migrations to configure schemas:
-```bash
+# 1. Clone & install dependencies
 pnpm install
-pnpm db:push
-```
 
-### 4. Start the Gateway Core (Hono)
-```bash
+# 2. Start PostgreSQL, Redis, & Kafka via Docker Compose
+docker-compose up -d
+
+# 3. Run automated Vitest test suite (Unit, Concurrency, Isolation, Pipeline)
+pnpm test
+
+# 4. Execute load testing benchmark runner
+npx tsx tests/load-test-runner.ts
+
+# 5. Start dev server
 pnpm dev
 ```
-
-### 5. Setup and Run the Python AI Service
-Create a virtual environment and install dependencies:
-```bash
-cd ai-service
-python -m venv venv
-source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-pip install -r requirements.txt
-```
-
-Train the initial baseline Isolation Forest model:
-```bash
-python train.py
-```
-
-Start the Kafka consumer:
-```bash
-python consumer.py
-```
-
-### 6. Run the Frontend Dashboard (Next.js)
-```bash
-cd ../frontend
-npm install
-npm run dev
-```
-Open [http://localhost:3001](http://localhost:3001) in your browser.

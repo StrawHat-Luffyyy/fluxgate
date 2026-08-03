@@ -152,8 +152,18 @@ def start_consumer() -> None:
 
             # Start Python child span linked to Node.js Gateway span
             with tracer.start_as_current_span("kafka.consume", context=parent_context) as span:
-                raw_data: str = msg.value().decode("utf-8")
-                features: dict = json.loads(raw_data)
+                try:
+                    raw_data: str = msg.value().decode("utf-8")
+                    features: dict = json.loads(raw_data)
+                except (json.JSONDecodeError, UnicodeDecodeError, Exception) as parse_err:
+                    logger.error(
+                        "MALFORMED MESSAGE ENCOUNTERED | Offset: %s | Error: %s | Routing to Dead-Letter Queue (DLQ)",
+                        msg.offset(),
+                        str(parse_err),
+                    )
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "malformed_json_dlq")
+                    continue
 
                 req_size: int = features.get("requestByteSize", features.get("requestByteBySize", 0))
                 res_size: int = features.get("responseByteSize", features.get("responseByteBySize", 0))
