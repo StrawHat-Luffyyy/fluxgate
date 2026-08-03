@@ -2,68 +2,72 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { apiFetch } from "../lib/api";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError("");
+    setIsLoading(true);
 
     try {
-      const res = await fetch("http://localhost:3000/auth/login", {
+      await apiFetch("/auth/login", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify({ email, password }),
-        credentials: "include",
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.message || "Login failed");
-      }
+      toast.success("Login successful");
       router.push("/dashboard");
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message);
+        toast.error(err.message || "Login failed");
       }
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-gray-900 text-white">
+    <div className="flex h-screen items-center justify-center bg-[#0f1115] text-white px-4">
       <form
         onSubmit={handleLogin}
-        className="flex flex-col gap-4 p-8 bg-gray-800 rounded-lg shadow-lg w-96"
+        className="flex flex-col gap-4 p-8 bg-[#1a1d24] rounded-xl border border-gray-800 shadow-2xl w-full max-w-sm"
       >
-        <h2 className="text-2xl font-bold mb-4">FluxGate Login</h2>
-        {error && <p className="text-red-500 text-sm">{error}</p>}
+        <div className="text-center mb-2">
+          <h2 className="text-2xl font-bold mb-1">FluxGate</h2>
+          <p className="text-gray-500 text-sm">
+            Sign in to your dashboard
+          </p>
+        </div>
 
         <input
           type="email"
           placeholder="Email"
-          className="p-2 rounded bg-gray-700 border border-gray-600"
+          className="p-3 rounded-lg bg-gray-800/50 border border-gray-700 focus:border-blue-500 focus:outline-none transition text-sm"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
+          disabled={isLoading}
         />
         <input
           type="password"
           placeholder="Password"
-          className="p-2 rounded bg-gray-700 border border-gray-600"
+          className="p-3 rounded-lg bg-gray-800/50 border border-gray-700 focus:border-blue-500 focus:outline-none transition text-sm"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
+          disabled={isLoading}
         />
         <button
           type="submit"
-          className="p-2 bg-blue-600 hover:bg-blue-500 rounded font-bold transition"
+          disabled={isLoading}
+          className="p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-bold transition text-sm mt-2"
         >
-          Sign In
+          {isLoading ? "Signing in..." : "Sign In"}
         </button>
       </form>
     </div>

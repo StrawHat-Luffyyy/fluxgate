@@ -1,5 +1,8 @@
 import { Redis } from "ioredis";
 import { env } from "../config/env.js";
+import { createChildLogger } from "../lib/logger.js";
+
+const log = createChildLogger("redis");
 
 export const redis = new Redis(env.REDIS_URL, {
   maxRetriesPerRequest: 3,
@@ -10,5 +13,5 @@ export const redis = new Redis(env.REDIS_URL, {
 });
 
 redis.on("error", (err) => {
-  console.error("Redis Connection Error:", err.message);
+  log.error({ err }, "Redis connection error");
 });

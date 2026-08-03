@@ -8,7 +8,7 @@ export const requiredRole = (
 ): MiddlewareHandler<DashboardEnv> => {
   return async (c, next) => {
     const userRole = c.get("userRole");
-    if (!userRole || !allowedRoles.includes(userRole)) {
+    if (!userRole) {
       return c.json(
         { error: "Unauthorized", message: "User role context missing." },
         401,

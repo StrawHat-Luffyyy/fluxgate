@@ -3,8 +3,11 @@ import { redis } from "../redis/client.js";
 import { tokenBucketLua } from "../redis/scripts/tokenBucket.js";
 import { leakyBucketLua } from "../redis/scripts/leakyBucket.js";
 import { SLIDING_WINDOW_LUA } from "../redis/scripts/slindingWindow.js";
+import { createChildLogger } from "../lib/logger.js";
 
 import type { Env } from "./auth.js";
+
+const log = createChildLogger("rate-limiter");
 
 type Strategy = "token_bucket" | "leaky_bucket" | "sliding_window";
 
@@ -118,7 +121,7 @@ export const rateLimiterMiddleware = (): MiddlewareHandler<Env> => {
       
       await next();
     } catch (err) {
-      console.error("Rate limiter infrastructure failure:", err);
+      log.error({ err, tenantId, path }, "Rate limiter infrastructure failure");
       await next();
     }
   };

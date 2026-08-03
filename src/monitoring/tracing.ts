@@ -7,6 +7,9 @@ import {
   ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { env } from "../config/env.js";
+import { createChildLogger } from "../lib/logger.js";
+
+const log = createChildLogger("tracing");
 
 // Resource attributes (Service identity)
 const resource = resourceFromAttributes({
@@ -37,18 +40,18 @@ export const otelSdk = new NodeSDK({
 export const startTracing = async () => {
   try {
     await otelSdk.start();
-    console.log("OpenTelemetry Distributed Tracing initialized successfully");
+    log.info("OpenTelemetry Distributed Tracing initialized successfully");
   } catch (err) {
-    console.error("Failed to initialize OpenTelemetry:", err);
+    log.error({ err }, "Failed to initialize OpenTelemetry");
   }
 };
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   try {
     await otelSdk.shutdown();
-    console.log("OpenTelemetry SDK shut down successfully.");
+    log.info("OpenTelemetry SDK shut down successfully");
   } catch (err) {
-    console.error("Error shutting down OpenTelemetry SDK:", err);
+    log.error({ err }, "Error shutting down OpenTelemetry SDK");
   } finally {
     process.exit(0);
   }

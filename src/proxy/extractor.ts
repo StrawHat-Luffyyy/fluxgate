@@ -5,8 +5,8 @@ export interface RequestFeatures {
   method: string;
   path: string;
   clientIp: string;
-  requestByteBySize: number;
-  responseByteBySize: number;
+  requestByteSize: number;
+  responseByteSize: number;
   statusCode: number;
   latencyMs: number;
   timestamp: number;
@@ -24,7 +24,6 @@ export const extractFeatures = (
   startTime: number,
 ): RequestFeatures => {
   const reqContentLength = c.req.header("Content-Length");
-  console.log("Content-Length:", reqContentLength);
   const requestByteSize = reqContentLength ? parseInt(reqContentLength, 10) : 0;
 
   const clientIp =
@@ -36,8 +35,8 @@ export const extractFeatures = (
     method: c.req.method,
     path: c.req.path,
     clientIp,
-    requestByteBySize: isNaN(requestByteSize) ? 0 : requestByteSize,
-    responseByteBySize: responseSize,
+    requestByteSize: isNaN(requestByteSize) ? 0 : requestByteSize,
+    responseByteSize: responseSize,
     statusCode,
     latencyMs: Date.now() - startTime,
     timestamp: startTime,

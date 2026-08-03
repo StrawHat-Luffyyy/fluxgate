@@ -2,17 +2,22 @@ import { Worker, type Job } from "bullmq";
 import { getRedisConnectionOptions } from "./connection.js";
 import type { ConnectionOptions } from "bullmq";
 import type { WebhookPayload } from "./webhookQueue.js";
+import { createChildLogger } from "../lib/logger.js";
 
+const log = createChildLogger("webhook-worker");
+
+// TODO: In production, this URL should come from a per-tenant database field
 const MOCK_TENANT_WEBHOOK_URL = "https://webhook.site/9345eb90-7f3e-40f1-bc61-ff488a96f03f"
 
 export const startWebhookWorker = () => {
-  console.log("BullMQ Webhook Worker started....");
+  log.info("BullMQ Webhook Worker started");
 
   const worker = new Worker<WebhookPayload>(
     "webhooks",
     async (job: Job<WebhookPayload>) => {
-      console.log(
-        `Processing Webhook Job ${job.id} for Tenant ${job.data.tenantId}...`,
+      log.info(
+        { jobId: job.id, tenantId: job.data.tenantId },
+        "Processing webhook job",
       );
       const payload = {
         id: job.id,
@@ -29,20 +34,20 @@ export const startWebhookWorker = () => {
       if (!response.ok) {
         throw new Error(`Webhook failed with status: ${response.status}`);
       }
-      console.log(`Webhook delivered successfully for Job ${job.id}`);
+      log.info({ jobId: job.id }, "Webhook delivered successfully");
     },
     { connection: getRedisConnectionOptions() as ConnectionOptions },
   );
   worker.on("completed", (job) => {
-    console.log(`Webhook Job ${job.id} completed successfully.`);
+    log.info({ jobId: job.id }, "Webhook job completed");
   });
 
   worker.on("failed", (job, err) => {
-    console.error(`Webhook Job ${job?.id} failed: ${err.message}`);
+    log.error({ jobId: job?.id, err }, "Webhook job failed");
   });
 
   worker.on("error", (err) => {
-    console.error(`Webhook Worker encountered an error: ${err.message}`);
+    log.error({ err }, "Webhook Worker encountered an error");
   });
   return worker;
 };

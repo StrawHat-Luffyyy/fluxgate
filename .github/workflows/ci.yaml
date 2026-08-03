@@ -12,16 +12,20 @@ concurrency:
 
 env:
   NODE_VERSION: "22"
+  PYTHON_VERSION: "3.12"
   DOCKER_IMAGE_NAME: fluxgate
 
 jobs:
-  ci:
-    name: Build & Validate
+  # -----------------------------------------------
+  # Job 1: Backend — type check, test, build
+  # -----------------------------------------------
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup pnpm
@@ -41,10 +45,7 @@ jobs:
       - name: Type check
         run: pnpm exec tsc --noEmit
 
-      - name: Lint
-        run: echo "No linter configured — skipping."
-
-      - name: Run Unit & Integration Tests
+      - name: Run tests
         run: pnpm vitest run
         env:
           DATABASE_URL: "postgresql://user:password@localhost:5432/testdb"
@@ -53,27 +54,99 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Build Docker image
-        run: |
-          docker build \
-            --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
-            --tag ${{ env.DOCKER_IMAGE_NAME }}:ci \
-            .
+  # -----------------------------------------------
+  # Job 2: Frontend — type check, build
+  # -----------------------------------------------
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
-      - name: Validate Docker image
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  # -----------------------------------------------
+  # Job 3: Python AI Service — syntax + type check
+  # -----------------------------------------------
+  ai-service:
+    name: AI Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    defaults:
+      run:
+        working-directory: ai-service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Syntax check
+        run: python -m py_compile consumer.py && python -m py_compile train.py
+
+  # -----------------------------------------------
+  # Job 4: Docker — build + validate image
+  # -----------------------------------------------
+  docker:
+    name: Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [backend]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate image
         run: |
-          echo "Verifying running user is fluxgate..."
+          echo "Verifying container runs as non-root user..."
           CONTAINER_USER=$(docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci whoami)
           if [ "$CONTAINER_USER" != "fluxgate" ]; then
             echo "::error::Container running as '$CONTAINER_USER' instead of 'fluxgate'"
             exit 1
           fi
-          echo "Container runs as non-root user: $CONTAINER_USER"
+          echo "✓ Container runs as: $CONTAINER_USER"
 
-          echo "Verifying node version..."
+          echo "Verifying Node.js version..."
           docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci node --version
 
-          echo "Verifying build output exists..."
+          echo "Verifying build output..."
           docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci ls -la dist/server.js
 
-          echo "Docker validation complete"
+          echo "✓ Docker validation passed"

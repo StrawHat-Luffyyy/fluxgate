@@ -81,7 +81,8 @@ describe("Authentication & Admin Routes", () => {
       const res = await app.request(req);
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toBe("Email, password and tenantId required");
+      expect(body.error).toBe("MISSING_FIELDS");
+      expect(body.message).toBe("Email, password and tenantId required");
     });
   });
 
@@ -116,9 +117,9 @@ describe("Authentication & Admin Routes", () => {
       });
 
       const res = await app.request(req);
-      expect(res.status).toBe(401); // User role context checks allow admin only
+      expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toBe("Unauthorized");
+      expect(body.error).toBe("Forbidden");
     });
 
     it("should allow admin to register a new gateway route", async () => {
