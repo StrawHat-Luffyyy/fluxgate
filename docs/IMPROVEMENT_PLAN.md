@@ -45,22 +45,25 @@ Status key: `[x]` done and verified, `[~]` done with a stated limitation, `[ ]` 
 
 ## Phase 2: real features
 
-- [x] Per-tenant rate-limit config (Postgres, Redis cache, admin API)
+- [~] Per-tenant rate-limit config (Postgres, Redis cache, admin API): no UI yet, that was Phase 5
 - [x] Real analytics from `request_logs` (batched writes, retention job)
-- [x] Persisted anomalies with score and SHAP attribution
+- [~] Persisted anomalies with score and SHAP attribution: API only, not shown in the dashboard yet (Phase 5)
 - [x] AI service: env config, reconnects, JSON logs, `/health`, versioned models, documented data
 - [x] `/health/live`, `/health/ready`
-- [x] Graceful shutdown
+- [~] Graceful shutdown: implemented, but its test skips on Windows and has not run yet (CI on Linux will be the first run)
 
 ## Phase 3: tests
 
-- [ ] Lua scripts tested against real Redis; Lua reimplementation mock deleted
-- [ ] Real pipeline e2e test: gateway, Kafka, consumer, alert, webhook
-- [ ] pytest for the consumer, run in CI
-- [ ] Load runner fails loudly; end-to-end section uses real HTTP with auth, rate limit, proxy
-- [ ] Coverage in CI with thresholds on gateway core
+- [x] Lua scripts tested against real Redis; Lua reimplementation mock deleted
+- [x] Real pipeline e2e test: gateway, Kafka, consumer, alert, webhook
+- [x] pytest for the consumer, run in CI
+- [x] Load runner fails loudly; end-to-end section uses real HTTP with auth, rate limit, proxy
+- [x] Coverage in CI with thresholds on gateway core
 
 ## Phase 4: observability and ops
+
+Not started: work stopped after Phase 3 at the owner's request.
+
 
 - [ ] Request and trace IDs in logs end to end
 - [ ] Prometheus metrics; Grafana dashboard provisioned by compose
@@ -69,11 +72,17 @@ Status key: `[x]` done and verified, `[~]` done with a stated limitation, `[ ]` 
 
 ## Phase 5: UI
 
+Not started: work stopped after Phase 3 at the owner's request. The dashboard still has the old pages.
+
+
 - [ ] Design tokens, light/dark, component set
 - [ ] Pages: login/signup, overview, routes, keys, rate limits, anomalies, webhooks, team
 - [ ] Playwright e2e and browser verification
 
 ## Phase 6: docs
+
+Not started: work stopped after Phase 3 at the owner's request. README only had the discredited benchmark numbers removed and its commands corrected.
+
 
 - [ ] README rewrite with real benchmarks, methodology, screenshots
 - [ ] OpenAPI spec, ADRs, CLAUDE.md gotchas updated
@@ -85,4 +94,5 @@ Status key: `[x]` done and verified, `[~]` done with a stated limitation, `[ ]` 
 - **Alert idempotency:** `anomalies` has a unique `(tenant_id, request_id)`, so Kafka redelivery creates no duplicate alert.
 - **Webhook outbox:** a `webhook_deliveries` row is written before enqueueing; a sweeper re-enqueues rows left pending by a Redis outage.
 - **Health semantics:** Postgres down means not ready (503) because auth needs it. Redis or Kafka down means ready but `degraded` (200), matching fail-open behaviour.
+- **Known performance finding:** a local `pnpm bench` run measured about 630-700 requests/s through the full gateway path against about 11,000-12,000 direct to the same upstream. The cause has not been investigated.
 - **Test split:** `pnpm test` runs unit tests with no services. `pnpm test:integration` needs Postgres and Redis, and refuses any database that is not local and named `*_test`.

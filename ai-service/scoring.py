@@ -130,7 +130,9 @@ class Scorer:
             return ScoreResult(score=score, is_anomaly=False)
 
         attribution, top = self.explain(x)
-        if not forest_flag:
+        # When both fire, the guard names the feature that is literally out of range,
+        # which is more specific than a SHAP ranking of a saturated forest score.
+        if exceeded:
             top = max(exceeded, key=exceeded.get)
         return ScoreResult(
             score=score,
@@ -138,8 +140,8 @@ class Scorer:
             attribution=attribution,
             top_feature=top,
             top_feature_value=float(features[top]),  # raw units, not log space
-            detector="forest" if forest_flag else "range_guard",
-            guard_limit=None if forest_flag else self.guard_multiplier * self.feature_max[top],
+            detector="range_guard" if exceeded else "forest",
+            guard_limit=self.guard_multiplier * self.feature_max[top] if exceeded else None,
         )
 
     def explain(self, x_model_space: np.ndarray) -> tuple[dict[str, float], str]:

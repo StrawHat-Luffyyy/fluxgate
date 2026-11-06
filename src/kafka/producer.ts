@@ -78,9 +78,13 @@ const flush = async () => {
   }
 };
 
+const drain = async () => {
+  while (status === "connected" && buffer.length > 0) await flush();
+};
+
 const scheduledFlush = () => {
   if (!flushing) {
-    flushing = flush().finally(() => {
+    flushing = drain().finally(() => {
       flushing = undefined;
     });
   }
