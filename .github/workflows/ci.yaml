@@ -102,12 +102,12 @@ jobs:
           PYTHON_BIN: python
 
   # -----------------------------------------------
-  # Frontend: lint and build
+  # Frontend: lint, build and browser tests
   # -----------------------------------------------
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -130,6 +130,26 @@ jobs:
 
       - name: Build
         run: pnpm --filter frontend build
+
+      - name: Start Postgres, Redis and Redpanda
+        run: docker compose up -d --wait postgres redis redpanda
+
+      - name: Create the browser test database
+        run: docker compose exec -T postgres psql -U fluxgate -d postgres -c 'create database fluxgate_ui_test'
+
+      - name: Install Chromium
+        run: pnpm --filter frontend exec playwright install --with-deps chromium
+
+      - name: Browser tests against the real gateway
+        run: pnpm --filter frontend test:e2e
+
+      - name: Upload browser test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright
+          path: frontend/e2e/artifacts
+          if-no-files-found: ignore
 
   # -----------------------------------------------
   # AI service: pytest against the shipped model
