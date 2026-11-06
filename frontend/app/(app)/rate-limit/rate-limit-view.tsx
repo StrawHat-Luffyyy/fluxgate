@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { FormError, TextField } from "@/components/ui/field";
+import { FormError, TextField, useFocusFirstInvalid } from "@/components/ui/field";
 import { ErrorState, PageHeader, Panel, ReadOnlyNote, Skeleton } from "@/components/ui/primitives";
 import { api, fieldErrorFrom } from "@/lib/api";
 import { formatCount } from "@/lib/format";
@@ -21,7 +21,8 @@ const STRATEGIES: { value: RateLimitStrategy; label: string; summary: string }[]
   {
     value: "leaky_bucket",
     label: "Leaky bucket",
-    summary: "Queues up to the capacity and drains at a constant rate, smoothing bursts.",
+    summary:
+      "A meter that fills with each request and drains at a constant rate. Over the capacity, requests are refused at once, never queued.",
   },
   {
     value: "sliding_window",
@@ -39,7 +40,7 @@ const describe = ({ strategy, capacity, refillRate, windowMs }: RateLimitConfig)
     return `At most ${formatCount(capacity)} requests in any ${formatCount(windowMs / 1000)} second window.`;
   }
   if (strategy === "leaky_bucket") {
-    return `Up to ${formatCount(capacity)} requests can be outstanding, draining at ${formatCount(refillRate)} per second.`;
+    return `The meter holds ${formatCount(capacity)} requests and drains at ${formatCount(refillRate)} per second. A request that would overflow it gets a 429 straight away.`;
   }
   return `Bursts of up to ${formatCount(capacity)} requests, refilling at ${formatCount(refillRate)} per second.`;
 };
@@ -54,6 +55,7 @@ function RateLimitForm({ config, canEdit }: { config: RateLimitConfig; canEdit: 
   const [windowSeconds, setWindowSeconds] = useState(String(config.windowMs / 1000));
   const [errors, setErrors] = useState<Errors>({});
   const [formError, setFormError] = useState<string>();
+  useFocusFirstInvalid(errors);
 
   const usesWindow = strategy === "sliding_window";
 
@@ -169,7 +171,13 @@ function RateLimitForm({ config, canEdit }: { config: RateLimitConfig; canEdit: 
               disabled={!canEdit}
               value={capacity}
               error={errors.capacity}
-              hint={usesWindow ? "Requests allowed per window." : "The most requests allowed at once."}
+              hint={
+                usesWindow
+                  ? "Requests allowed per window."
+                  : strategy === "leaky_bucket"
+                    ? "The most the meter can hold."
+                    : "The largest burst allowed."
+              }
               onChange={(event) => setCapacity(event.target.value)}
             />
             {usesWindow ? (

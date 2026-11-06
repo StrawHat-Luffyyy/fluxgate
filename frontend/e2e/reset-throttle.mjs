@@ -1,7 +1,6 @@
-// Runs before the e2e gateway starts. Each run signs up about a dozen workspaces, and
-// the gateway allows 20 per IP per 15 minutes, so a second run soon after would be
-// refused. This clears those counters and nothing else, and only in the logical Redis
-// database the suite owns (see playwright.config.ts).
+// Runs before each e2e test. The suite signs up more workspaces than the gateway allows
+// per IP per 15 minutes. This clears those counters and nothing else, and only in the
+// logical Redis database the suite owns (see playwright.config.ts).
 import { Redis } from "ioredis";
 
 const url = new URL(process.env.REDIS_URL ?? "");

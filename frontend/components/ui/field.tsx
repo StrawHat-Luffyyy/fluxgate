@@ -1,6 +1,24 @@
 "use client";
 
-import { useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import {
+  useEffect,
+  useId,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+} from "react";
+
+/**
+ * Moves focus to the first field in error, so a keyboard or screen reader user lands
+ * on the problem. Pass the state set only on submit, never something that changes
+ * while typing, or this would pull focus away mid-word.
+ */
+export function useFocusFirstInvalid(errors: object) {
+  useEffect(() => {
+    if (!Object.values(errors).some(Boolean)) return;
+    document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [errors]);
+}
 
 const control =
   "block w-full rounded-md border bg-surface text-sm text-fg placeholder:text-fg-3 transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:-outline-offset-1";

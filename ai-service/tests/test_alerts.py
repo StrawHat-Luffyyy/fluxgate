@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 import requests
 
-from alerts import AlertClient, PermanentAlertError, TransientAlertError, build_payload, serialize, sign
+from alerts import AlertClient, PermanentAlertError, TransientAlertError, _message, build_payload, serialize, sign
 from scoring import ScoreResult, TrafficEvent
 from tracing import TraceContext
 
@@ -126,6 +126,35 @@ def test_range_guard_payload_is_honest():
     assert p["detector"] == "range_guard"
     assert "Isolation Forest flagged" not in p["message"] and "range guard" in p["message"]
     assert "Isolation Forest flagged" in sample_payload("forest")["message"]
+
+
+def guard_message(forest_flagged, top="responseByteSize", value=3145710.0, limit=1000000.0):
+    res = ScoreResult(-0.1, True, {"requestByteSize": 0.0, "responseByteSize": 0.1, "latencyMs": -0.4}, top, value,
+                      detector="range_guard", guard_limit=limit, forest_flagged=forest_flagged)
+    return _message(res)
+
+
+def test_range_guard_message_says_whether_the_forest_agreed():
+    assert guard_message(False).endswith("the Isolation Forest did not flag it")
+    assert guard_message(True).endswith("the Isolation Forest also flagged it")
+
+
+def test_messages_use_readable_names_and_units():
+    assert guard_message(False).startswith(
+        "Response size 3,145,710 bytes exceeds the range guard limit 1,000,000 bytes"
+    )
+    assert guard_message(False, "latencyMs", 30000.0, 14480.0).startswith(
+        "Latency 30,000 ms exceeds the range guard limit 14,480 ms"
+    )
+    forest = sample_payload("forest")["message"]
+    assert forest == "Isolation Forest flagged abnormal traffic, driven mainly by latency (30,000 ms)"
+    assert "latencyMs" not in forest
+
+
+def test_unknown_feature_keeps_its_own_name_without_a_unit():
+    assert guard_message(False, "newFeature", 12.0, 5.0).startswith(
+        "newFeature 12 exceeds the range guard limit 5 ("
+    )
 
 
 @pytest.mark.parametrize("status", [401, 403, 404, 500])

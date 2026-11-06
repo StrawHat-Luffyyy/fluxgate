@@ -1,11 +1,29 @@
+import { execFileSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
+import path from "node:path";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test as base, type APIRequestContext, type Page } from "@playwright/test";
+import postgres from "postgres";
+import { DATABASE_URL, GATEWAY_URL, INTERNAL_ALERT_SECRET, REDIS_URL } from "./constants";
 
-export const GATEWAY_URL = "http://localhost:3005";
-// The gateway's development default for INTERNAL_ALERT_SECRET. Only valid in NODE_ENV=development.
-const DEV_ALERT_SECRET = "dev-only-internal-alert-secret";
+export { GATEWAY_URL };
+
+/** For states the API will not create, like an expired key or last week's traffic. */
+export async function withDb<T>(run: (sql: postgres.Sql) => Promise<T> | PromiseLike<T>): Promise<T> {
+  const sql = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+  try {
+    return await run(sql);
+  } finally {
+    await sql.end();
+  }
+}
+
+// Text from ai-service/alerts.py, so that the UI is tested against what it really gets.
+export const FOREST_MESSAGE =
+  "Isolation Forest flagged abnormal traffic, driven mainly by latency (4,200 ms)";
+export const guardMessage = (forest: "did not flag it" | "also flagged it") =>
+  `Response size 52,428,800 bytes exceeds the range guard limit 31,457,100 bytes (a multiple of the largest value in the training data); the Isolation Forest ${forest}`;
 
 export const PASSWORD = "correct-horse-battery";
 
@@ -17,8 +35,21 @@ export const uniqueEmail = (label: string) =>
  * handles on purpose, so tests declare which statuses they expect. Anything else
  * logged as an error, and any uncaught exception, fails the test.
  */
-export const test = base.extend<{ expectedHttpErrors: number[]; consoleGuard: void }>({
+export const test = base.extend<{
+  expectedHttpErrors: number[];
+  consoleGuard: void;
+  freshThrottle: void;
+}>({
   expectedHttpErrors: [[], { option: true }],
+  freshThrottle: [
+    async ({}, use) => {
+      execFileSync(process.execPath, [path.join(__dirname, "reset-throttle.mjs")], {
+        env: { ...process.env, REDIS_URL },
+      });
+      await use();
+    },
+    { auto: true },
+  ],
   consoleGuard: [
     async ({ page, expectedHttpErrors }, use) => {
       const problems: string[] = [];
@@ -130,7 +161,7 @@ export async function postAlert(
 ) {
   const body = JSON.stringify({
     tenantId,
-    alertType: "traffic_anomaly",
+    alertType: "anomaly_detected",
     requestId: randomUUID(),
     detector: "forest",
     score: -0.0813,
@@ -139,12 +170,12 @@ export async function postAlert(
     topFeatureValue: 4200,
     attribution: { latencyMs: -3.142, responseByteSize: 0.212, requestByteSize: -0.074 },
     features: { latencyMs: 4200, responseByteSize: 1843, requestByteSize: 512 },
-    message: "Latency of 4200 ms is unusual for this traffic",
+    message: FOREST_MESSAGE,
     detectedAt: new Date().toISOString(),
     ...overrides,
   });
   const timestamp = Math.floor(Date.now() / 1000);
-  const digest = createHmac("sha256", DEV_ALERT_SECRET).update(`${timestamp}.${body}`).digest("hex");
+  const digest = createHmac("sha256", INTERNAL_ALERT_SECRET).update(`${timestamp}.${body}`).digest("hex");
   const res = await request.post(`${GATEWAY_URL}/internal/alerts`, {
     headers: {
       "Content-Type": "application/json",

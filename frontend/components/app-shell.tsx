@@ -25,6 +25,7 @@ import { toast } from "sonner";
 import { Logo } from "@/components/logo";
 import { IconButton } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/primitives";
+import { moveRadioWithArrows } from "@/components/ui/switch";
 import { api, errorMessage } from "@/lib/api";
 import { useHasOpenAnomaly, useHealth, useMe } from "@/lib/queries";
 import { setTheme, useThemeChoice, type ThemeChoice } from "@/lib/theme";
@@ -132,16 +133,24 @@ const THEMES: { value: ThemeChoice; label: string; icon: LucideIcon }[] = [
   { value: "dark", label: "Dark", icon: Moon },
 ];
 
+const THEME_VALUES = THEMES.map((theme) => theme.value);
+
 function ThemeSwitcher() {
   const choice = useThemeChoice();
   return (
-    <div role="radiogroup" aria-label="Theme" className="inline-flex shrink-0 rounded-md border border-line p-px">
+    <div
+      role="radiogroup"
+      aria-label="Theme"
+      className="inline-flex shrink-0 rounded-md border border-line p-px"
+      onKeyDown={(event) => moveRadioWithArrows(event, THEME_VALUES, choice, setTheme)}
+    >
       {THEMES.map(({ value, label, icon: Icon }) => (
         <button
           key={value}
           type="button"
           role="radio"
           aria-checked={choice === value}
+          tabIndex={choice === value ? 0 : -1}
           aria-label={label}
           title={label}
           onClick={() => setTheme(value)}
@@ -157,7 +166,7 @@ function ThemeSwitcher() {
 }
 
 function Identity() {
-  const { data: me } = useMe();
+  const { data: me, isError, refetch } = useMe();
   const logout = useMutation({
     mutationFn: () => api("/auth/logout", { method: "POST" }),
     onSuccess: () => window.location.assign("/login"),
@@ -172,6 +181,17 @@ function Identity() {
               {me.email}
             </p>
             <p className="text-xs text-fg-3">{me.role === "admin" ? "Admin" : "Viewer"}</p>
+          </>
+        ) : isError ? (
+          <>
+            <p className="text-xs text-bad">Could not load your account</p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="min-h-6 text-xs text-fg-2 underline hover:text-fg"
+            >
+              Try again
+            </button>
           </>
         ) : (
           <>
@@ -192,7 +212,8 @@ function Identity() {
 }
 
 function WorkspaceName() {
-  const { data: me } = useMe();
+  const { data: me, isError } = useMe();
+  if (isError) return null;
   if (!me) return <Skeleton className="mt-1 h-3.5 w-24" />;
   return (
     <p className="mt-0.5 flex min-h-5 items-center gap-1.5 text-xs text-fg-2">

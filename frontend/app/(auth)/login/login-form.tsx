@@ -5,26 +5,44 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
-import { FormError, TextField } from "@/components/ui/field";
-import { api, errorMessage } from "@/lib/api";
+import { FormError, TextField, useFocusFirstInvalid } from "@/components/ui/field";
+import { api, fieldErrorFrom } from "@/lib/api";
 import { validateEmail } from "@/lib/validate";
 
-/** Only same-site paths: this value comes from the URL, so it must not be an open redirect. */
-const safeNext = (next: string | null) =>
-  next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")
-    ? next
-    : "/overview";
+/**
+ * This value comes from the URL, so it must not become an open redirect. Parsing it
+ * the way the browser will is the only reliable check: URL parsing removes tabs and
+ * newlines and treats backslashes as slashes, so "/<tab>/evil.example.com" looks
+ * local as a string but is another host once navigated to.
+ */
+const safeNext = (next: string | null) => {
+  if (!next) return "/overview";
+  try {
+    const url = new URL(next, window.location.origin);
+    if (url.origin === window.location.origin) return url.pathname + url.search + url.hash;
+  } catch {
+    // Unparseable: fall through to the default.
+  }
+  return "/overview";
+};
 
 export function LoginForm() {
-  const next = safeNext(useSearchParams().get("next"));
+  const next = useSearchParams().get("next");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [formError, setFormError] = useState<string>();
+  useFocusFirstInvalid(errors);
 
   const login = useMutation({
     mutationFn: () => api("/auth/login", { method: "POST", body: { email: email.trim(), password } }),
     // A full navigation, so no cached data from another session can survive a sign-in.
-    onSuccess: () => window.location.assign(next),
+    onSuccess: () => window.location.assign(safeNext(next)),
+    onError: (err) => {
+      const { field, message } = fieldErrorFrom(err, ["email", "password"]);
+      if (field) setErrors({ [field]: message });
+      else setFormError(message);
+    },
   });
 
   const submit = (event: FormEvent) => {
@@ -34,6 +52,7 @@ export function LoginForm() {
       password: password ? undefined : "Enter your password.",
     };
     setErrors(found);
+    setFormError(undefined);
     if (!found.email && !found.password) login.mutate();
   };
 
@@ -43,7 +62,7 @@ export function LoginForm() {
         <h1 className="text-lg font-semibold tracking-tight">Sign in</h1>
         <p className="text-sm text-fg-2">Use your FluxGate account.</p>
       </div>
-      <FormError>{login.isError && errorMessage(login.error)}</FormError>
+      <FormError>{formError}</FormError>
       <TextField
         label="Email"
         type="email"

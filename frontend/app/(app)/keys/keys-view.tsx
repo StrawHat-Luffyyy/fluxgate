@@ -6,7 +6,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button, IconButton } from "@/components/ui/button";
 import { ConfirmDialog, Modal } from "@/components/ui/dialog";
-import { FormError, TextField } from "@/components/ui/field";
+import { FormError, TextField, useFocusFirstInvalid } from "@/components/ui/field";
 import {
   Badge,
   EmptyState,
@@ -55,17 +55,19 @@ function CreateKeyDialog({
   const [days, setDays] = useState("");
   const [errors, setErrors] = useState<{ name?: string; expiresInDays?: string }>({});
   const [formError, setFormError] = useState<string>();
+  useFocusFirstInvalid(errors);
 
   const create = useMutation({
-    mutationFn: () =>
-      api<IssuedKey>("/keys", {
+    // The secret is handed over here rather than returned, so that it never becomes
+    // mutation data, which the query cache would hold on to.
+    mutationFn: async () => {
+      const issued = await api<IssuedKey>("/keys", {
         method: "POST",
         body: { name: name.trim(), ...(days.trim() ? { expiresInDays: Number(days) } : {}) },
-      }),
-    onSuccess: (issued) => {
-      client.invalidateQueries({ queryKey: queryKeys.keys });
+      });
       onCreated(issued.apiKey);
     },
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.keys }),
     onError: (err) => {
       const { field, message } = fieldErrorFrom(err, ["name", "expiresInDays"]);
       if (field) setErrors({ [field]: message });
@@ -152,14 +154,15 @@ export function KeysView() {
     [keys],
   );
 
-  // Not optimistic: the response carries the only copy of the new secret.
+  // Not optimistic: the response carries the only copy of the new secret, which is
+  // handed over here so that it never becomes mutation data in the query cache.
   const rotate = useMutation({
-    mutationFn: (key: ApiKey) => api<IssuedKey>(`/keys/${key.id}/rotate`, { method: "POST" }),
-    onSuccess: (issued) => {
+    mutationFn: async (key: ApiKey) => {
+      const issued = await api<IssuedKey>(`/keys/${key.id}/rotate`, { method: "POST" });
       setRotating(undefined);
       setSecret(issued.apiKey);
-      client.invalidateQueries({ queryKey: queryKeys.keys });
     },
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.keys }),
     onError: (err) => {
       setRotating(undefined);
       toast.error(errorMessage(err));
@@ -250,9 +253,12 @@ export function KeysView() {
                     <td>
                       {!key.revokedAt && (
                         <div className="flex justify-end gap-0.5">
-                          <IconButton label={`Rotate ${key.name}`} onClick={() => setRotating(key)}>
-                            <RefreshCw aria-hidden className="size-3.5" />
-                          </IconButton>
+                          {/* The new key inherits the expiry, so rotating an expired key would issue a dead one. */}
+                          {state === "active" && (
+                            <IconButton label={`Rotate ${key.name}`} onClick={() => setRotating(key)}>
+                              <RefreshCw aria-hidden className="size-3.5" />
+                            </IconButton>
+                          )}
                           <IconButton label={`Revoke ${key.name}`} onClick={() => setRevoking(key)}>
                             <Ban aria-hidden className="size-3.5" />
                           </IconButton>
@@ -279,7 +285,11 @@ export function KeysView() {
       <ConfirmDialog
         open={Boolean(rotating)}
         title={`Rotate "${rotating?.name}"?`}
-        body="The current key stops working immediately. Clients need the new key before they can send traffic again."
+        body={`The current key stops working immediately. Clients need the new key before they can send traffic again. ${
+          rotating?.expiresAt
+            ? `The new key keeps the same expiry: ${formatDate(rotating.expiresAt)}.`
+            : "The new key does not expire, like the current one."
+        }`}
         confirmLabel="Rotate key"
         pending={rotate.isPending}
         onClose={() => setRotating(undefined)}

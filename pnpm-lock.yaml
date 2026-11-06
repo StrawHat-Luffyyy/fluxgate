@@ -148,6 +148,9 @@ importers:
       eslint-config-next:
         specifier: 16.2.10
         version: 16.2.10(@typescript-eslint/parser@8.63.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
       tailwindcss:
         specifier: ^4
         version: 4.3.2
