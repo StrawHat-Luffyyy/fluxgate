@@ -1,6 +1,7 @@
 import { createMiddleware } from "hono/factory";
 import type { Env } from "../middleware/auth.js";
 import { clientIpOf } from "../lib/clientIp.js";
+import { currentTraceHeaders } from "../lib/requestContext.js";
 import { emitTelemetry } from "../telemetry/pipeline.js";
 import { countingStream } from "./countingStream.js";
 import { parseContentLength, type RequestFeatures } from "./extractor.js";
@@ -30,7 +31,9 @@ export const telemetryMiddleware = createMiddleware<Env>(async (c, next) => {
     latencyMs,
     timestamp: startedAt,
   };
-  const traceCarrier = c.get("traceCarrier");
+  // The proxy sets this, but a 429 never reaches the proxy. Read here because the
+  // emit below can run after the request's async context has ended.
+  const traceCarrier = c.get("traceCarrier") ?? currentTraceHeaders();
   const emit = (responseByteSize: number) =>
     emitTelemetry(
       {

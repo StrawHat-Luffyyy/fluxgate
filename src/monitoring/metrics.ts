@@ -68,6 +68,13 @@ export const webhookDeliveries = new Counter({
   registers: [register],
 });
 
+export const anomaliesRecorded = new Counter({
+  name: "fluxgate_anomalies_recorded_total",
+  help: "Anomalies stored from ai-service alerts, excluding redelivered duplicates",
+  labelNames: ["detector"],
+  registers: [register],
+});
+
 export const metricsMiddleware = createMiddleware(async (c, next) => {
   const endTimer = requestLatencyHistogram.startTimer();
 

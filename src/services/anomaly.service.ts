@@ -3,6 +3,7 @@ import { db } from "../db/index.js";
 import { anomalies, tenants } from "../db/schema.js";
 import { AppError } from "../lib/AppError.js";
 import { createChildLogger } from "../lib/logger.js";
+import { anomaliesRecorded } from "../monitoring/metrics.js";
 import { createDeliveries, enqueueDeliveries } from "./webhook.service.js";
 
 const log = createChildLogger("anomaly-service");
@@ -70,6 +71,7 @@ export async function recordAnomaly(alert: AlertInput) {
     log.debug({ requestId: alert.requestId }, "Duplicate alert ignored");
     return { created: false, deliveries: 0 };
   }
+  anomaliesRecorded.inc({ detector: alert.detector });
   await enqueueDeliveries(result.deliveries);
   log.info(
     { tenantId: alert.tenantId, anomalyId: result.anomaly.id, topFeature: alert.topFeature },

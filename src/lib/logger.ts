@@ -1,6 +1,7 @@
 import pino from "pino";
 import { trace } from "@opentelemetry/api";
 import { env } from "../config/env.js";
+import { currentRequestContext } from "./requestContext.js";
 
 
 export const logger = pino({
@@ -10,15 +11,12 @@ export const logger = pino({
       ? { target: "pino-pretty", options: { colorize: true } }
       : undefined,
   mixin() {
-    const activeSpan = trace.getActiveSpan();
-    if (activeSpan) {
-      const ctx = activeSpan.spanContext();
-      return {
-        traceId: ctx.traceId,
-        spanId: ctx.spanId,
-      };
-    }
-    return {};
+    const context = currentRequestContext();
+    const spanId = trace.getActiveSpan()?.spanContext().spanId;
+    return {
+      ...(context ? { requestId: context.requestId, traceId: context.traceId } : {}),
+      ...(spanId ? { spanId } : {}),
+    };
   },
   formatters: {
     level(label) {

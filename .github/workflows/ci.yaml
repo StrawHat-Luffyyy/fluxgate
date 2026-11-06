@@ -13,7 +13,6 @@ concurrency:
 env:
   NODE_VERSION: "22"
   PYTHON_VERSION: "3.12"
-  DOCKER_IMAGE_NAME: fluxgate
 
 jobs:
   # -----------------------------------------------
@@ -164,45 +163,48 @@ jobs:
         run: python -m pytest --cov=. --cov-report=term-missing
 
   # -----------------------------------------------
-  # Docker: build and validate the gateway image
+  # Docker: build all images, start the whole demo, and prove it works
   # -----------------------------------------------
   docker:
-    name: Docker
+    name: Docker demo
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     needs: [backend]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Start the whole system
+        run: docker compose --profile full up -d --build --wait --wait-timeout 300
 
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          load: true
-          tags: ${{ env.DOCKER_IMAGE_NAME }}:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Validate image
+      - name: Images run as non-root
         run: |
-          echo "Verifying container runs as non-root user..."
-          CONTAINER_USER=$(docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci whoami)
-          if [ "$CONTAINER_USER" != "fluxgate" ]; then
-            echo "::error::Container running as '$CONTAINER_USER' instead of 'fluxgate'"
-            exit 1
-          fi
-          echo "✓ Container runs as: $CONTAINER_USER"
+          for service in gateway frontend ai-service; do
+            user=$(docker compose --profile full exec -T "$service" id -un)
+            echo "$service runs as $user"
+            test "$user" = "fluxgate"
+          done
 
-          echo "Verifying Node.js version..."
-          docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci node --version
+      - name: Demo traffic produces a real anomaly and webhook delivery
+        run: |
+          curl -sf -c /tmp/session -X POST http://localhost:3000/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"admin@fluxgate-demo.example.com","password":"fluxgate-demo-password"}' > /dev/null
+          for _ in $(seq 1 60); do
+            anomalies=$(curl -sf -b /tmp/session http://localhost:3000/anomalies | jq '.anomalies | length')
+            deliveries=$(curl -sf -b /tmp/session http://localhost:3000/webhooks/deliveries | jq '[.deliveries[] | select(.status == "delivered")] | length')
+            echo "anomalies=$anomalies delivered=$deliveries"
+            if [ "$anomalies" -gt 0 ] && [ "$deliveries" -gt 0 ]; then exit 0; fi
+            sleep 5
+          done
+          exit 1
 
-          echo "Verifying build output..."
-          docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci ls -la dist/server.js
+      - name: Prometheus scrapes the gateway and Grafana has the dashboard
+        run: |
+          curl -sf http://localhost:9090/api/v1/targets | jq -e '.data.activeTargets[0].health == "up"'
+          curl -sf http://localhost:3002/api/dashboards/uid/fluxgate-gateway | jq -e '.dashboard.panels | length > 0'
 
-          echo "✓ Docker validation passed"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --profile full logs --tail=100

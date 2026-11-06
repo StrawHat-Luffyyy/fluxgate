@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { env } from "../config/env.js";
+import { currentRequestContext, runWithRequestContext } from "../lib/requestContext.js";
 import { verifySignature } from "../lib/signature.js";
 import { recordAnomaly } from "../services/anomaly.service.js";
 
@@ -44,7 +45,14 @@ internalRouter.post("/alerts", async (c) => {
     return c.json({ error: "Bad Request", message: "Invalid alert payload" }, 400);
   }
 
-  const outcome = await recordAnomaly(result.data);
+  // Log and queue under the id of the request that caused the alert, not this call,
+  // so one id follows it from the gateway through the consumer to the webhook.
+  const context = currentRequestContext();
+  const outcome = context
+    ? await runWithRequestContext({ ...context, requestId: result.data.requestId }, () =>
+        recordAnomaly(result.data),
+      )
+    : await recordAnomaly(result.data);
   return c.json({ success: true, ...outcome }, 202);
 });
 

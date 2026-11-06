@@ -1,66 +1,46 @@
-# --------------------------------------------------
-# Stage 1: Install Dependencies
-# --------------------------------------------------
-FROM node:22-alpine AS deps
+# Gateway image. Also runs migrations, the seed and the demo services (see
+# docker-compose.yml), so that those use exactly the code that serves traffic.
 
-RUN apk add --no-cache dumb-init wget
+FROM node:22-alpine AS base
 RUN corepack enable
-
 WORKDIR /app
-
-# Copy dependency manifests + workspace config for layer caching
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY frontend/package.json ./frontend/package.json
 
-# Install only the root workspace (backend) deps — skip the frontend workspace
+# --- Build with dev dependencies ---
+FROM base AS builder
 RUN pnpm install --frozen-lockfile --filter .
-
-# --------------------------------------------------
-# Stage 2: Build
-# --------------------------------------------------
-FROM deps AS builder
-
-WORKDIR /app
-
-COPY src/ ./src/
 COPY tsconfig.json ./
-
+COPY src ./src
 RUN pnpm run build
 
-# Strip dev dependencies for the production image
-RUN pnpm prune --prod --config.confirmModulesPurge=false
+# --- Runtime dependencies only ---
+FROM base AS prod-deps
+RUN pnpm install --frozen-lockfile --filter . --prod
 
-# --------------------------------------------------
-# Stage 3: Production Runtime
-# --------------------------------------------------
+# --- Runtime ---
 FROM node:22-alpine AS runner
-
 LABEL org.opencontainers.image.title="FluxGate API Gateway" \
-      org.opencontainers.image.description="Edge-native API Gateway & Traffic Intelligence Platform" \
       org.opencontainers.image.source="https://github.com/StrawHat-Luffyyy/fluxgate"
 
-RUN apk add --no-cache dumb-init wget
-
-RUN addgroup -S fluxgate && \
-    adduser -S fluxgate -G fluxgate
+RUN apk add --no-cache dumb-init
+RUN addgroup -S fluxgate && adduser -S fluxgate -G fluxgate
 
 WORKDIR /app
-
 ENV NODE_ENV=production
 
-# Copy only what's needed to run
+COPY --from=prod-deps --chown=fluxgate:fluxgate /app/node_modules ./node_modules
 COPY --from=builder --chown=fluxgate:fluxgate /app/dist ./dist
-COPY --from=builder --chown=fluxgate:fluxgate /app/node_modules ./node_modules
-COPY --from=builder --chown=fluxgate:fluxgate /app/package.json ./package.json
+COPY --chown=fluxgate:fluxgate package.json ./
+COPY --chown=fluxgate:fluxgate drizzle ./drizzle
 
 USER fluxgate
-
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s \
-            --timeout=5s \
-            --start-period=10s \
-            --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+# Liveness, not readiness: restarting the gateway would not fix a database outage.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget --quiet --tries=1 --spider "http://127.0.0.1:${PORT:-3000}/health/live" || exit 1
 
+# dumb-init forwards SIGTERM, so graceful shutdown runs when the container stops.
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "dist/server.js"]

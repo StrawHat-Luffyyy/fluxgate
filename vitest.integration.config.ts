@@ -29,7 +29,14 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text-summary", "lcov"],
       include: ["src/**/*.ts"],
-      exclude: ["src/server.ts", "src/db/migrate.ts", "src/monitoring/tracing.ts", "src/monitoring/sentry.ts"],
+      exclude: [
+        "src/server.ts",
+        "src/db/migrate.ts",
+        "src/monitoring/tracing.ts",
+        "src/monitoring/sentry.ts",
+        // Demo scripts, run by the CI docker job. guard.ts is safety code, so it counts.
+        "src/demo/{constants,seed,traffic,upstream}.ts",
+      ],
       // server.ts and the Kafka client are exercised by tests/e2e, which is not measured here.
       thresholds: {
         lines: 80,

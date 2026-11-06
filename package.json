@@ -15,7 +15,10 @@
     "bench": "tsx scripts/run-benchmarks.ts",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts",
+    "demo": "docker compose --profile full up -d --build --wait",
+    "demo:reset": "docker compose --profile full run --rm seed node dist/demo/seed.js --reset",
+    "demo:down": "docker compose --profile full down"
   },
   "keywords": [],
   "author": "",
