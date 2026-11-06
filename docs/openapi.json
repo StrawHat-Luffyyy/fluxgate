@@ -1,0 +1,4495 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FluxGate API",
+    "version": "1.0.0",
+    "description": "Multi-tenant API gateway. Three surfaces: the proxy under /gateway/* (API key), the dashboard API (HttpOnly session cookie, role-based), and an internal alert endpoint (HMAC signature, called by ai-service). /health* and /metrics are operational; /metrics requires a bearer token only when METRICS_TOKEN is set.\n\nEvery response carries X-Request-Id (always generated server side) and X-Trace-Id. Dashboard routes (everything except /gateway) accept bodies up to 256 KiB (413 PAYLOAD_TOO_LARGE) and send CORS headers for the configured origins with credentials. Unknown fields in request bodies are ignored, not rejected. Minimum role per operation is given by the `x-required-role` extension."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Gateway"
+    },
+    {
+      "name": "Auth"
+    },
+    {
+      "name": "API keys"
+    },
+    {
+      "name": "Team"
+    },
+    {
+      "name": "Routes"
+    },
+    {
+      "name": "Rate limit"
+    },
+    {
+      "name": "Webhooks"
+    },
+    {
+      "name": "Analytics"
+    },
+    {
+      "name": "Anomalies"
+    },
+    {
+      "name": "Internal"
+    },
+    {
+      "name": "Operations"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "operationId": "health",
+        "summary": "Liveness (alias of /health/live)",
+        "description": "Process-responsive check only; never touches dependencies.",
+        "responses": {
+          "200": {
+            "description": "Alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Liveness"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "operationId": "healthLive",
+        "summary": "Liveness",
+        "responses": {
+          "200": {
+            "description": "Alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Liveness"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "operationId": "healthReady",
+        "summary": "Readiness",
+        "description": "503 only when Postgres is down or the instance is draining for shutdown. Redis or Kafka being down yields 200 with status \"degraded\" (the gateway still serves traffic). Each dependency check times out after 1 s.",
+        "responses": {
+          "200": {
+            "description": "Ready (status ok or degraded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready (status unavailable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "operationId": "metrics",
+        "summary": "Prometheus metrics",
+        "description": "If METRICS_TOKEN is configured the request must send `Authorization: Bearer <METRICS_TOKEN>`; otherwise the endpoint is open. Production startup requires METRICS_TOKEN.",
+        "security": [
+          {},
+          {
+            "metricsToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition format",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong or missing metrics token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/signup": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "signup",
+        "summary": "Create a tenant and its first admin",
+        "description": "The only unauthenticated way to create a user, and it always creates a new tenant. Throttled to 20 attempts per client IP per 15 minutes (sliding window; fails open if Redis is down). The 429 uses the machine code TOO_MANY_REQUESTS.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "user"
+                  ],
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "user": {
+                      "$ref": "#/components/schemas/SignupUser"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "409": {
+            "description": "An account with this email already exists (USER_EXISTS)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Throttled"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "login",
+        "summary": "Log in and set the session cookie",
+        "description": "Sets the HttpOnly `Fluxgate_session` cookie (JWT HS256, 24 h, SameSite=Strict, Path=/, Secure when COOKIE_SECURE is true or, by default, NODE_ENV=production). Throttled to 30 attempts per client IP per 15 minutes.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Logged in",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Fluxgate_session=<jwt>; Max-Age=86400; Path=/; HttpOnly; SameSite=Strict[; Secure]",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "properties": {
+                    "message": {
+                      "const": "Login successful"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "description": "Wrong email or password (INVALID_CREDENTIALS)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Throttled"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "logout",
+        "summary": "Clear the session cookie",
+        "description": "No authentication required. Only clears the cookie client side; the JWT is not revoked and stays valid until it expires (24 h).",
+        "responses": {
+          "200": {
+            "description": "Cookie cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "message"
+                  ],
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "message": {
+                      "const": "Logged out"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "me",
+        "summary": "Current user profile",
+        "description": "Any authenticated user.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "responses": {
+          "200": {
+            "description": "Profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "user"
+                  ],
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/Profile"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/keys": {
+      "get": {
+        "tags": [
+          "API keys"
+        ],
+        "operationId": "listKeys",
+        "summary": "List API keys (including revoked)",
+        "description": "Minimum role: viewer (admin also allowed). Key hashes and raw keys are never returned; only the hint.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "responses": {
+          "200": {
+            "description": "Keys, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "keys"
+                  ],
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ApiKey"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "API keys"
+        ],
+        "operationId": "createKey",
+        "summary": "Create an API key",
+        "description": "Minimum role: admin. The raw key is returned once only.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyWithSecret"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/keys/{id}/rotate": {
+      "post": {
+        "tags": [
+          "API keys"
+        ],
+        "operationId": "rotateKey",
+        "summary": "Rotate an API key",
+        "description": "Minimum role: admin. Atomically revokes the key and creates a replacement with the same name and expiry. The new raw key is returned once only. Responds 201 because a new key is created.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "API key id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Rotated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyWithSecret"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/keys/{id}": {
+      "delete": {
+        "tags": [
+          "API keys"
+        ],
+        "operationId": "revokeKey",
+        "summary": "Revoke an API key",
+        "description": "Minimum role: admin. 404 if the key is missing or already revoked. Takes effect immediately (cache entry deleted).",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "API key id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "key"
+                  ],
+                  "properties": {
+                    "key": {
+                      "$ref": "#/components/schemas/ApiKey"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/team": {
+      "get": {
+        "tags": [
+          "Team"
+        ],
+        "operationId": "listMembers",
+        "summary": "List team members",
+        "description": "Minimum role: viewer (admin also allowed).",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "responses": {
+          "200": {
+            "description": "Members, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "members"
+                  ],
+                  "properties": {
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Member"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Team"
+        ],
+        "operationId": "createMember",
+        "summary": "Add a team member",
+        "description": "Minimum role: admin. The admin sets the new member's initial password.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMemberRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "member"
+                  ],
+                  "properties": {
+                    "member": {
+                      "$ref": "#/components/schemas/Member"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "409": {
+            "description": "Email already used by any account in the system (USER_EXISTS)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/team/{id}": {
+      "patch": {
+        "tags": [
+          "Team"
+        ],
+        "operationId": "updateMemberRole",
+        "summary": "Change a member's role",
+        "description": "Minimum role: admin.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "User id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "member"
+                  ],
+                  "properties": {
+                    "member": {
+                      "$ref": "#/components/schemas/Member"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "409": {
+            "description": "Would leave the tenant with no admin (LAST_ADMIN)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Team"
+        ],
+        "operationId": "removeMember",
+        "summary": "Remove a member",
+        "description": "Minimum role: admin.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "User id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "409": {
+            "description": "Would leave the tenant with no admin (LAST_ADMIN)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/admin/rate-limit": {
+      "get": {
+        "tags": [
+          "Rate limit"
+        ],
+        "operationId": "getRateLimit",
+        "summary": "Get the tenant rate limit",
+        "description": "Minimum role: viewer (admin also allowed). Returns the defaults (token_bucket, capacity 100, refillRate 20, windowMs 60000) when none is saved.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "responses": {
+          "200": {
+            "description": "Config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "config"
+                  ],
+                  "properties": {
+                    "config": {
+                      "$ref": "#/components/schemas/RateLimitConfig"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Rate limit"
+        ],
+        "operationId": "putRateLimit",
+        "summary": "Replace the tenant rate limit",
+        "description": "Minimum role: admin. Applies within about 5 s on every node. windowMs is used only by sliding_window; refillRate only by token_bucket and leaky_bucket; all four fields are still required.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RateLimitConfig"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "config"
+                  ],
+                  "properties": {
+                    "config": {
+                      "$ref": "#/components/schemas/RateLimitConfig"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/admin/routes": {
+      "get": {
+        "tags": [
+          "Routes"
+        ],
+        "operationId": "listRoutes",
+        "summary": "List gateway routes",
+        "description": "Minimum role: viewer (admin also allowed).",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "responses": {
+          "200": {
+            "description": "Routes ordered by pathPrefix",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "routes"
+                  ],
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "routes": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/GatewayRoute"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Routes"
+        ],
+        "operationId": "createRoute",
+        "summary": "Create a gateway route",
+        "description": "Minimum role: admin. targetUrl is checked for SSRF at creation (and again at request time); private or unresolvable hosts return 400 UNSAFE_TARGET_URL.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRouteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "route"
+                  ],
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "route": {
+                      "$ref": "#/components/schemas/GatewayRoute"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "409": {
+            "description": "Prefix already exists for this tenant (ROUTE_EXISTS)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/admin/routes/{id}": {
+      "patch": {
+        "tags": [
+          "Routes"
+        ],
+        "operationId": "updateRoute",
+        "summary": "Update a gateway route",
+        "description": "Minimum role: admin. Both fields optional; an empty object only touches updatedAt.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Route id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRouteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "route"
+                  ],
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "route": {
+                      "$ref": "#/components/schemas/GatewayRoute"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "409": {
+            "description": "Prefix already exists (ROUTE_EXISTS)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Routes"
+        ],
+        "operationId": "deleteRoute",
+        "summary": "Delete a gateway route",
+        "description": "Minimum role: admin.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Route id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/webhooks": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "listWebhooks",
+        "summary": "List webhook endpoints",
+        "description": "Minimum role: viewer (admin also allowed).",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "responses": {
+          "200": {
+            "description": "Endpoints, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "endpoints"
+                  ],
+                  "properties": {
+                    "endpoints": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/WebhookEndpoint"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "createWebhook",
+        "summary": "Create a webhook endpoint",
+        "description": "Minimum role: admin. The signing secret is returned once only; there is no endpoint to read or rotate it later.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "endpoint",
+                    "secret",
+                    "message"
+                  ],
+                  "properties": {
+                    "endpoint": {
+                      "$ref": "#/components/schemas/WebhookEndpoint"
+                    },
+                    "secret": {
+                      "type": "string",
+                      "pattern": "^whsec_[0-9a-f]{48}$",
+                      "description": "Shown once. Use as the HMAC key, including the whsec_ prefix."
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/webhooks/deliveries": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "listDeliveries",
+        "summary": "List recent deliveries",
+        "description": "Minimum role: viewer (admin also allowed). Always the 50 most recent; there is no pagination or filter.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "responses": {
+          "200": {
+            "description": "Deliveries, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "deliveries"
+                  ],
+                  "properties": {
+                    "deliveries": {
+                      "type": "array",
+                      "maxItems": 50,
+                      "items": {
+                        "$ref": "#/components/schemas/WebhookDelivery"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/webhooks/deliveries/{id}/retry": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "retryDelivery",
+        "summary": "Retry a dead delivery",
+        "description": "Minimum role: admin. Only deliveries with status dead can be retried; otherwise 404.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Delivery id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Re-queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "delivery"
+                  ],
+                  "properties": {
+                    "delivery": {
+                      "$ref": "#/components/schemas/DeliveryRef"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/webhooks/{id}": {
+      "patch": {
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "updateWebhook",
+        "summary": "Update a webhook endpoint",
+        "description": "Minimum role: admin. enabled=false clears enabledAt; true sets it to now.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Webhook endpoint id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWebhookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "endpoint"
+                  ],
+                  "properties": {
+                    "endpoint": {
+                      "$ref": "#/components/schemas/WebhookEndpoint"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "deleteWebhook",
+        "summary": "Delete a webhook endpoint",
+        "description": "Minimum role: admin. Its deliveries are deleted with it.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Webhook endpoint id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/test": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "testWebhook",
+        "summary": "Send a test event",
+        "description": "Minimum role: admin. Queues a `webhook.test` delivery. It is created even if the endpoint is disabled, in which case it ends up dead with lastError \"Endpoint is disabled\".",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Webhook endpoint id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "delivery"
+                  ],
+                  "properties": {
+                    "delivery": {
+                      "$ref": "#/components/schemas/DeliveryRef"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/analytics/overview": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "operationId": "analyticsOverview",
+        "summary": "Traffic overview",
+        "description": "Minimum role: viewer (admin also allowed). Aggregated from request_logs; cached 10 s. Latency figures cover only requests that reached an upstream and are null when there were none.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "24h",
+                "7d"
+              ],
+              "default": "24h"
+            },
+            "description": "Window. Time-series bucket size is 1 minute, 1 hour or 6 hours respectively."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Overview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsOverview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "range invalid (VALIDATION_ERROR)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          },
+          "503": {
+            "description": "Query exceeded 5 s (ANALYTICS_TIMEOUT)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anomalies": {
+      "get": {
+        "tags": [
+          "Anomalies"
+        ],
+        "operationId": "listAnomalies",
+        "summary": "List anomalies",
+        "description": "Minimum role: viewer (admin also allowed). Keyset pagination, newest first (detectedAt desc, id desc).",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "viewer",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/AnomalyStatus"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "description": "Pass back nextCursor. Format `<ISO timestamp>_<uuid>`; anything else gives 400 VALIDATION_ERROR."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "anomalies",
+                    "nextCursor"
+                  ],
+                  "properties": {
+                    "anomalies": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Anomaly"
+                      }
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Non-null whenever the page is full (length equals limit), so the last page may be followed by one empty page."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query or cursor (VALIDATION_ERROR)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/anomalies/{id}": {
+      "patch": {
+        "tags": [
+          "Anomalies"
+        ],
+        "operationId": "updateAnomaly",
+        "summary": "Set anomaly status",
+        "description": "Minimum role: admin.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Anomaly id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "$ref": "#/components/schemas/AnomalyStatus"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "anomaly"
+                  ],
+                  "properties": {
+                    "anomaly": {
+                      "$ref": "#/components/schemas/Anomaly"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/internal/alerts": {
+      "post": {
+        "tags": [
+          "Internal"
+        ],
+        "operationId": "internalAlert",
+        "summary": "Record an anomaly alert (ai-service only)",
+        "description": "Authenticated by `X-FluxGate-Signature: t=<unix seconds>,v1=<hex>` where v1 = HMAC-SHA256(INTERNAL_ALERT_SECRET, `${t}.${rawBody}`) as lowercase hex, with t within 300 s of server time. Idempotent per (tenantId, requestId): a duplicate returns 202 with created=false. 404 TENANT_NOT_FOUND is permanent (ai-service sends it to its DLQ). The anomaly and its webhook deliveries are stored in one transaction.",
+        "security": [
+          {
+            "internalSignature": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-FluxGate-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^t=\\d+,v1=[0-9a-f]{64}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "created",
+                    "deliveries"
+                  ],
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "created": {
+                      "type": "boolean"
+                    },
+                    "deliveries": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Webhook deliveries queued"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body not JSON or fails the schema (error \"Bad Request\", no requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed, stale or wrong signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown tenant (TENANT_NOT_FOUND)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          }
+        }
+      }
+    },
+    "/gateway/{path}": {
+      "get": {
+        "tags": [
+          "Gateway"
+        ],
+        "operationId": "proxy_get",
+        "summary": "Proxy GET to the tenant's upstream",
+        "description": "`{path}` is `<routePrefix>/<rest>`: the first segment selects the tenant's route (see /admin/routes) and the rest plus the query string are appended to that route's targetUrl. Authenticated with a tenant API key. Order: auth, telemetry, rate limit, proxy. The upstream response (status, headers, body) is streamed back unchanged except hop-by-hop headers, Server and X-Powered-By. The API key and the Fluxgate_session cookie are not forwarded; send upstream credentials in X-Upstream-Authorization and they arrive as Authorization. Redirects are not followed. In the app this is the single wildcard route `/gateway/*`, which matches any depth. The gateway adds no CORS headers and OPTIONS also requires the API key.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "allowReserved": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route prefix and remaining path, e.g. `users/42`. May contain slashes."
+          },
+          {
+            "name": "X-Upstream-Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Forwarded to the upstream as Authorization."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upstream response. Any upstream status is passed through (this entry stands for all of them). Rate-limit headers are added.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/revoked/expired API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No route configured for the prefix (error \"Not Found\"). An upstream 404 is also passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream unreachable, or target blocked by the SSRF guard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication backend unavailable (AUTH_UNAVAILABLE, fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Gateway"
+        ],
+        "operationId": "proxy_post",
+        "summary": "Proxy POST to the tenant's upstream",
+        "description": "`{path}` is `<routePrefix>/<rest>`: the first segment selects the tenant's route (see /admin/routes) and the rest plus the query string are appended to that route's targetUrl. Authenticated with a tenant API key. Order: auth, telemetry, rate limit, proxy. The upstream response (status, headers, body) is streamed back unchanged except hop-by-hop headers, Server and X-Powered-By. The API key and the Fluxgate_session cookie are not forwarded; send upstream credentials in X-Upstream-Authorization and they arrive as Authorization. Redirects are not followed. In the app this is the single wildcard route `/gateway/*`, which matches any depth. The gateway adds no CORS headers and OPTIONS also requires the API key.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "allowReserved": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route prefix and remaining path, e.g. `users/42`. May contain slashes."
+          },
+          {
+            "name": "X-Upstream-Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Forwarded to the upstream as Authorization."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "*/*": {
+              "schema": {}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upstream response. Any upstream status is passed through (this entry stands for all of them). Rate-limit headers are added.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/revoked/expired API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No route configured for the prefix (error \"Not Found\"). An upstream 404 is also passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream unreachable, or target blocked by the SSRF guard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication backend unavailable (AUTH_UNAVAILABLE, fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Gateway"
+        ],
+        "operationId": "proxy_put",
+        "summary": "Proxy PUT to the tenant's upstream",
+        "description": "`{path}` is `<routePrefix>/<rest>`: the first segment selects the tenant's route (see /admin/routes) and the rest plus the query string are appended to that route's targetUrl. Authenticated with a tenant API key. Order: auth, telemetry, rate limit, proxy. The upstream response (status, headers, body) is streamed back unchanged except hop-by-hop headers, Server and X-Powered-By. The API key and the Fluxgate_session cookie are not forwarded; send upstream credentials in X-Upstream-Authorization and they arrive as Authorization. Redirects are not followed. In the app this is the single wildcard route `/gateway/*`, which matches any depth. The gateway adds no CORS headers and OPTIONS also requires the API key.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "allowReserved": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route prefix and remaining path, e.g. `users/42`. May contain slashes."
+          },
+          {
+            "name": "X-Upstream-Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Forwarded to the upstream as Authorization."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "*/*": {
+              "schema": {}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upstream response. Any upstream status is passed through (this entry stands for all of them). Rate-limit headers are added.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/revoked/expired API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No route configured for the prefix (error \"Not Found\"). An upstream 404 is also passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream unreachable, or target blocked by the SSRF guard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication backend unavailable (AUTH_UNAVAILABLE, fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Gateway"
+        ],
+        "operationId": "proxy_patch",
+        "summary": "Proxy PATCH to the tenant's upstream",
+        "description": "`{path}` is `<routePrefix>/<rest>`: the first segment selects the tenant's route (see /admin/routes) and the rest plus the query string are appended to that route's targetUrl. Authenticated with a tenant API key. Order: auth, telemetry, rate limit, proxy. The upstream response (status, headers, body) is streamed back unchanged except hop-by-hop headers, Server and X-Powered-By. The API key and the Fluxgate_session cookie are not forwarded; send upstream credentials in X-Upstream-Authorization and they arrive as Authorization. Redirects are not followed. In the app this is the single wildcard route `/gateway/*`, which matches any depth. The gateway adds no CORS headers and OPTIONS also requires the API key.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "allowReserved": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route prefix and remaining path, e.g. `users/42`. May contain slashes."
+          },
+          {
+            "name": "X-Upstream-Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Forwarded to the upstream as Authorization."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "*/*": {
+              "schema": {}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upstream response. Any upstream status is passed through (this entry stands for all of them). Rate-limit headers are added.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/revoked/expired API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No route configured for the prefix (error \"Not Found\"). An upstream 404 is also passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream unreachable, or target blocked by the SSRF guard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication backend unavailable (AUTH_UNAVAILABLE, fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Gateway"
+        ],
+        "operationId": "proxy_delete",
+        "summary": "Proxy DELETE to the tenant's upstream",
+        "description": "`{path}` is `<routePrefix>/<rest>`: the first segment selects the tenant's route (see /admin/routes) and the rest plus the query string are appended to that route's targetUrl. Authenticated with a tenant API key. Order: auth, telemetry, rate limit, proxy. The upstream response (status, headers, body) is streamed back unchanged except hop-by-hop headers, Server and X-Powered-By. The API key and the Fluxgate_session cookie are not forwarded; send upstream credentials in X-Upstream-Authorization and they arrive as Authorization. Redirects are not followed. In the app this is the single wildcard route `/gateway/*`, which matches any depth. The gateway adds no CORS headers and OPTIONS also requires the API key.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "allowReserved": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route prefix and remaining path, e.g. `users/42`. May contain slashes."
+          },
+          {
+            "name": "X-Upstream-Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Forwarded to the upstream as Authorization."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "*/*": {
+              "schema": {}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upstream response. Any upstream status is passed through (this entry stands for all of them). Rate-limit headers are added.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/revoked/expired API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No route configured for the prefix (error \"Not Found\"). An upstream 404 is also passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream unreachable, or target blocked by the SSRF guard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication backend unavailable (AUTH_UNAVAILABLE, fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "tags": [
+          "Gateway"
+        ],
+        "operationId": "proxy_head",
+        "summary": "Proxy HEAD to the tenant's upstream",
+        "description": "`{path}` is `<routePrefix>/<rest>`: the first segment selects the tenant's route (see /admin/routes) and the rest plus the query string are appended to that route's targetUrl. Authenticated with a tenant API key. Order: auth, telemetry, rate limit, proxy. The upstream response (status, headers, body) is streamed back unchanged except hop-by-hop headers, Server and X-Powered-By. The API key and the Fluxgate_session cookie are not forwarded; send upstream credentials in X-Upstream-Authorization and they arrive as Authorization. Redirects are not followed. In the app this is the single wildcard route `/gateway/*`, which matches any depth. The gateway adds no CORS headers and OPTIONS also requires the API key.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "allowReserved": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route prefix and remaining path, e.g. `users/42`. May contain slashes."
+          },
+          {
+            "name": "X-Upstream-Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Forwarded to the upstream as Authorization."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upstream response. Any upstream status is passed through (this entry stands for all of them). Rate-limit headers are added.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/revoked/expired API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No route configured for the prefix (error \"Not Found\"). An upstream 404 is also passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream unreachable, or target blocked by the SSRF guard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication backend unavailable (AUTH_UNAVAILABLE, fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "tags": [
+          "Gateway"
+        ],
+        "operationId": "proxy_options",
+        "summary": "Proxy OPTIONS to the tenant's upstream",
+        "description": "`{path}` is `<routePrefix>/<rest>`: the first segment selects the tenant's route (see /admin/routes) and the rest plus the query string are appended to that route's targetUrl. Authenticated with a tenant API key. Order: auth, telemetry, rate limit, proxy. The upstream response (status, headers, body) is streamed back unchanged except hop-by-hop headers, Server and X-Powered-By. The API key and the Fluxgate_session cookie are not forwarded; send upstream credentials in X-Upstream-Authorization and they arrive as Authorization. Redirects are not followed. In the app this is the single wildcard route `/gateway/*`, which matches any depth. The gateway adds no CORS headers and OPTIONS also requires the API key.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "allowReserved": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route prefix and remaining path, e.g. `users/42`. May contain slashes."
+          },
+          {
+            "name": "X-Upstream-Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Forwarded to the upstream as Authorization."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upstream response. Any upstream status is passed through (this entry stands for all of them). Rate-limit headers are added.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/revoked/expired API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No route configured for the prefix (error \"Not Found\"). An upstream 404 is also passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Configured capacity",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Strategy": {
+                "schema": {
+                  "enum": [
+                    "token_bucket",
+                    "leaky_bucket",
+                    "sliding_window"
+                  ]
+                }
+              },
+              "X-RateLimit-Fallback": {
+                "description": "`fail-open`, sent instead of the three headers above, when Redis was unavailable and the request was let through unmetered.",
+                "schema": {
+                  "const": "fail-open"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream unreachable, or target blocked by the SSRF guard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication backend unavailable (AUTH_UNAVAILABLE, fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBasic"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "anomaly.detected": {
+      "post": {
+        "operationId": "webhookAnomalyDetected",
+        "summary": "An anomaly was recorded",
+        "description": "Sent as application/json to the endpoint URL. The signature is computed per attempt, so t changes between retries while the delivery id stays the same. Failed attempts are retried with exponential backoff (WEBHOOK_MAX_ATTEMPTS, WEBHOOK_BACKOFF_MS, jittered); after the last attempt, or immediately for a disabled endpoint or a private-address target, the delivery is marked dead and can be retried via POST /webhooks/deliveries/{id}/retry. Redirects are not followed; the timeout is WEBHOOK_TIMEOUT_MS.",
+        "parameters": [
+          {
+            "name": "X-FluxGate-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^t=\\d+,v1=[0-9a-f]{64}$"
+            },
+            "description": "`t=<unix seconds>,v1=<hex>`; v1 = HMAC-SHA256(secret, `${t}.${rawBody}`), where secret is the whsec_ string returned when the endpoint was created and rawBody is the exact request bytes. Recompute, compare in constant time, and reject if |now - t| > 300 s."
+          },
+          {
+            "name": "X-FluxGate-Delivery",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-FluxGate-Event",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "const": "FluxGate-Webhooks/1.0"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/WebhookEnvelope"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "const": "anomaly.detected"
+                      },
+                      "data": {
+                        "$ref": "#/components/schemas/AnomalyWebhookData"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Acknowledge. Any other status, or a timeout, counts as a failed attempt."
+          }
+        }
+      }
+    },
+    "webhook.test": {
+      "post": {
+        "operationId": "webhookTest",
+        "summary": "Test event sent by POST /webhooks/{id}/test",
+        "description": "Sent as application/json to the endpoint URL. The signature is computed per attempt, so t changes between retries while the delivery id stays the same. Failed attempts are retried with exponential backoff (WEBHOOK_MAX_ATTEMPTS, WEBHOOK_BACKOFF_MS, jittered); after the last attempt, or immediately for a disabled endpoint or a private-address target, the delivery is marked dead and can be retried via POST /webhooks/deliveries/{id}/retry. Redirects are not followed; the timeout is WEBHOOK_TIMEOUT_MS.",
+        "parameters": [
+          {
+            "name": "X-FluxGate-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^t=\\d+,v1=[0-9a-f]{64}$"
+            },
+            "description": "`t=<unix seconds>,v1=<hex>`; v1 = HMAC-SHA256(secret, `${t}.${rawBody}`), where secret is the whsec_ string returned when the endpoint was created and rawBody is the exact request bytes. Recompute, compare in constant time, and reject if |now - t| > 300 s."
+          },
+          {
+            "name": "X-FluxGate-Delivery",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-FluxGate-Event",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "const": "FluxGate-Webhooks/1.0"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/WebhookEnvelope"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "const": "webhook.test"
+                      },
+                      "data": {
+                        "type": "object",
+                        "required": [
+                          "message"
+                        ],
+                        "properties": {
+                          "message": {
+                            "const": "Test event from FluxGate"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Acknowledge"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "Fluxgate_session",
+        "description": "JWT (HS256) in an HttpOnly cookie set by POST /auth/login. Role and tenant are re-read from the database on every request. A missing, invalid or expired token, or a deleted user, gives 401."
+      },
+      "apiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Tenant API key from POST /keys, sent as `Authorization: Bearer <key>`. Used only on /gateway/*."
+      },
+      "internalSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-FluxGate-Signature",
+        "description": "`t=<unix>,v1=<hex HMAC-SHA256 of \"<t>.<raw body>\">` keyed by INTERNAL_ALERT_SECRET; 300 s tolerance."
+      },
+      "metricsToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "METRICS_TOKEN, when configured."
+      }
+    },
+    "responses": {
+      "E400": {
+        "description": "Invalid JSON (INVALID_JSON) or body failed validation (VALIDATION_ERROR; message is `<path>: <reason>` for the first issue), or UNSAFE_TARGET_URL",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "E401": {
+        "description": "No session cookie, invalid/expired token, or user no longer exists. error is \"Unauthorized\"; no requestId.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBasic"
+            }
+          }
+        }
+      },
+      "E403": {
+        "description": "Role below x-required-role. error is \"Forbidden\"; no requestId.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBasic"
+            }
+          }
+        }
+      },
+      "E404": {
+        "description": "Resource not found, or the id is not a UUID (same response)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "E413": {
+        "description": "Body over 256 KiB (PAYLOAD_TOO_LARGE); no requestId",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBasic"
+            }
+          }
+        }
+      },
+      "E500": {
+        "description": "Unexpected error (INTERNAL_ERROR)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Throttled": {
+        "description": "Per-IP throttle exceeded (TOO_MANY_REQUESTS); no requestId",
+        "headers": {
+          "Retry-After": {
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Seconds"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBasic"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error",
+          "message",
+          "requestId"
+        ],
+        "description": "Produced by the error handler. `error` is a machine code such as VALIDATION_ERROR. Unknown routes return the same plus a `path` field.",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorBasic": {
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "description": "Inline error from middleware; no requestId (use the X-Request-Id header). `error` is a title-case string such as Unauthorized or Forbidden, except PAYLOAD_TOO_LARGE and TOO_MANY_REQUESTS.",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "Liveness": {
+        "type": "object",
+        "required": [
+          "status",
+          "timestamp",
+          "uptime"
+        ],
+        "properties": {
+          "status": {
+            "const": "ok"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "uptime": {
+            "type": "number",
+            "description": "Seconds"
+          }
+        }
+      },
+      "Readiness": {
+        "type": "object",
+        "required": [
+          "status",
+          "draining",
+          "checks",
+          "telemetryBuffered"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "degraded",
+              "unavailable"
+            ]
+          },
+          "draining": {
+            "type": "boolean"
+          },
+          "checks": {
+            "type": "object",
+            "required": [
+              "postgres",
+              "redis",
+              "kafka"
+            ],
+            "properties": {
+              "postgres": {
+                "$ref": "#/components/schemas/CheckStatus"
+              },
+              "redis": {
+                "$ref": "#/components/schemas/CheckStatus"
+              },
+              "kafka": {
+                "$ref": "#/components/schemas/CheckStatus"
+              }
+            }
+          },
+          "telemetryBuffered": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Telemetry events buffered awaiting Kafka"
+          }
+        }
+      },
+      "CheckStatus": {
+        "enum": [
+          "up",
+          "down"
+        ]
+      },
+      "Role": {
+        "enum": [
+          "admin",
+          "viewer"
+        ]
+      },
+      "SignupRequest": {
+        "type": "object",
+        "required": [
+          "tenantName",
+          "email",
+          "password"
+        ],
+        "properties": {
+          "tenantName": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 80,
+            "description": "Trimmed"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "password": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 72
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 72
+          }
+        }
+      },
+      "SignupUser": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "tenantId",
+          "role",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "description": "Lowercased"
+          },
+          "tenantId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Profile": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "role",
+          "tenantId",
+          "tenantName",
+          "plan"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "tenantId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenantName": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "string",
+            "description": "free, pro or enterprise by convention (default free); not constrained in the database"
+          }
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "hint",
+          "createdAt",
+          "expiresAt",
+          "revokedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string",
+            "description": "Non-secret fragment for recognising the key"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateKeyRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "default": "Default",
+            "description": "Trimmed"
+          },
+          "expiresInDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3650,
+            "description": "Omit for a key that never expires"
+          }
+        }
+      },
+      "KeyWithSecret": {
+        "type": "object",
+        "required": [
+          "key",
+          "apiKey",
+          "message"
+        ],
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ApiKey"
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "Raw API key. Shown once; not recoverable."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "Member": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "role",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateMemberRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password",
+          "role"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "password": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 72
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        }
+      },
+      "UpdateRoleRequest": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        }
+      },
+      "RateLimitConfig": {
+        "type": "object",
+        "required": [
+          "strategy",
+          "capacity",
+          "refillRate",
+          "windowMs"
+        ],
+        "properties": {
+          "strategy": {
+            "enum": [
+              "token_bucket",
+              "leaky_bucket",
+              "sliding_window"
+            ]
+          },
+          "capacity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "refillRate": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 1000000,
+            "description": "Units per second"
+          },
+          "windowMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 86400000
+          }
+        }
+      },
+      "GatewayRoute": {
+        "type": "object",
+        "required": [
+          "id",
+          "tenantId",
+          "pathPrefix",
+          "targetUrl",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenantId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "pathPrefix": {
+            "type": "string",
+            "description": "Single segment with a leading slash, e.g. /users"
+          },
+          "targetUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PathPrefix": {
+        "type": "string",
+        "pattern": "^/?[A-Za-z0-9._~-]{1,64}/?$",
+        "description": "Trimmed, a single path segment. A missing leading slash is added and a trailing slash removed (stored as /segment)."
+      },
+      "TargetUrl": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048,
+        "description": "http or https, no credentials, must not resolve to a private address"
+      },
+      "CreateRouteRequest": {
+        "type": "object",
+        "required": [
+          "pathPrefix",
+          "targetUrl"
+        ],
+        "properties": {
+          "pathPrefix": {
+            "$ref": "#/components/schemas/PathPrefix"
+          },
+          "targetUrl": {
+            "$ref": "#/components/schemas/TargetUrl"
+          }
+        }
+      },
+      "UpdateRouteRequest": {
+        "type": "object",
+        "properties": {
+          "pathPrefix": {
+            "$ref": "#/components/schemas/PathPrefix"
+          },
+          "targetUrl": {
+            "$ref": "#/components/schemas/TargetUrl"
+          }
+        }
+      },
+      "WebhookEndpoint": {
+        "type": "object",
+        "required": [
+          "id",
+          "url",
+          "enabledAt",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "enabledAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "null means disabled"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateWebhookRequest": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048
+          }
+        }
+      },
+      "UpdateWebhookRequest": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DeliveryRef": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "WebhookDelivery": {
+        "type": "object",
+        "required": [
+          "id",
+          "endpointId",
+          "eventType",
+          "status",
+          "attempts",
+          "lastStatusCode",
+          "lastError",
+          "createdAt",
+          "deliveredAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "endpointId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "eventType": {
+            "type": "string",
+            "examples": [
+              "anomaly.detected",
+              "webhook.test"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "delivered",
+              "dead"
+            ]
+          },
+          "attempts": {
+            "type": "integer"
+          },
+          "lastStatusCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deliveredAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "AnomalyStatus": {
+        "enum": [
+          "open",
+          "acknowledged",
+          "resolved"
+        ]
+      },
+      "Anomaly": {
+        "type": "object",
+        "required": [
+          "id",
+          "tenantId",
+          "requestId",
+          "status",
+          "detector",
+          "score",
+          "modelVersion",
+          "topFeature",
+          "topFeatureValue",
+          "attribution",
+          "features",
+          "message",
+          "detectedAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenantId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AnomalyStatus"
+          },
+          "detector": {
+            "type": "string",
+            "description": "forest or range_guard"
+          },
+          "score": {
+            "type": "number"
+          },
+          "modelVersion": {
+            "type": "string"
+          },
+          "topFeature": {
+            "type": "string"
+          },
+          "topFeatureValue": {
+            "type": "number"
+          },
+          "attribution": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "features": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "message": {
+            "type": "string"
+          },
+          "detectedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AlertRequest": {
+        "type": "object",
+        "required": [
+          "tenantId",
+          "alertType",
+          "requestId",
+          "detector",
+          "score",
+          "modelVersion",
+          "topFeature",
+          "topFeatureValue",
+          "attribution",
+          "features",
+          "message",
+          "detectedAt"
+        ],
+        "properties": {
+          "tenantId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "alertType": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "detector": {
+            "enum": [
+              "forest",
+              "range_guard"
+            ]
+          },
+          "score": {
+            "type": "number"
+          },
+          "modelVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "topFeature": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "topFeatureValue": {
+            "type": "number"
+          },
+          "attribution": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "features": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "detectedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601; a UTC offset is allowed"
+          }
+        }
+      },
+      "AnomalyWebhookData": {
+        "description": "The alert as received plus the stored anomaly id. alertType is delivered here although it is not stored on the anomaly.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AlertRequest"
+          },
+          {
+            "type": "object",
+            "required": [
+              "anomalyId"
+            ],
+            "properties": {
+              "anomalyId": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        ]
+      },
+      "WebhookEnvelope": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "createdAt",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Delivery id; stable across retries, use it to de-duplicate"
+          },
+          "type": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the delivery row was created"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "AnalyticsOverview": {
+        "type": "object",
+        "required": [
+          "success",
+          "range",
+          "summary",
+          "timeSeries",
+          "topRoutes",
+          "topConsumers"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "range": {
+            "enum": [
+              "1h",
+              "24h",
+              "7d"
+            ]
+          },
+          "summary": {
+            "type": "object",
+            "required": [
+              "totalRequests",
+              "errorCount",
+              "errorRate",
+              "rateLimitedCount",
+              "avgLatencyMs",
+              "p50LatencyMs",
+              "p95LatencyMs",
+              "p99LatencyMs",
+              "totalAnomalies",
+              "openAnomalies"
+            ],
+            "properties": {
+              "totalRequests": {
+                "type": "integer"
+              },
+              "errorCount": {
+                "type": "integer",
+                "description": "status >= 500"
+              },
+              "errorRate": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "rateLimitedCount": {
+                "type": "integer"
+              },
+              "avgLatencyMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p50LatencyMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p95LatencyMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p99LatencyMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "totalAnomalies": {
+                "type": "integer"
+              },
+              "openAnomalies": {
+                "type": "integer"
+              }
+            }
+          },
+          "timeSeries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "time",
+                "requests",
+                "errors",
+                "rateLimited",
+                "p50LatencyMs",
+                "p95LatencyMs",
+                "p99LatencyMs",
+                "anomalies"
+              ],
+              "properties": {
+                "time": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "requests": {
+                  "type": "integer"
+                },
+                "errors": {
+                  "type": "integer"
+                },
+                "rateLimited": {
+                  "type": "integer"
+                },
+                "p50LatencyMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "p95LatencyMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "p99LatencyMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "anomalies": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "topRoutes": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "required": [
+                "routePrefix",
+                "requests",
+                "errors",
+                "p95LatencyMs"
+              ],
+              "properties": {
+                "routePrefix": {
+                  "type": "string"
+                },
+                "requests": {
+                  "type": "integer"
+                },
+                "errors": {
+                  "type": "integer"
+                },
+                "p95LatencyMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "topConsumers": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "required": [
+                "apiKeyId",
+                "name",
+                "hint",
+                "requests",
+                "rateLimited"
+              ],
+              "properties": {
+                "apiKeyId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "\"Unknown key\" if the key row no longer exists"
+                },
+                "hint": {
+                  "type": "string"
+                },
+                "requests": {
+                  "type": "integer"
+                },
+                "rateLimited": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
