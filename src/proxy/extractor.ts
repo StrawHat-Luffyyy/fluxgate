@@ -1,44 +1,27 @@
-import type { Context } from "hono";
-
+/**
+ * One completed gateway request. This is the wire format of the Kafka topic and
+ * the contract with ai-service, so renames must be made on both sides.
+ */
 export interface RequestFeatures {
+  requestId: string;
   tenantId: string;
+  apiKeyId: string;
   method: string;
   path: string;
+  routePrefix: string;
   clientIp: string;
   requestByteSize: number;
   responseByteSize: number;
   statusCode: number;
+  /** Time until upstream response headers: excludes the client's download speed. */
   latencyMs: number;
+  rateLimited: boolean;
+  /** False when the gateway answered itself (404, 429, 502): nothing to score. */
+  upstreamCalled: boolean;
   timestamp: number;
 }
 
-/**
- * Extracts numerical features from the completed request/response lifecycle.
- */
-
-export const extractFeatures = (
-  c: Context,
-  tenantId: string,
-  statusCode: number,
-  responseSize: number,
-  startTime: number,
-): RequestFeatures => {
-  const reqContentLength = c.req.header("Content-Length");
-  const requestByteSize = reqContentLength ? parseInt(reqContentLength, 10) : 0;
-
-  const clientIp =
-    c.req.header("x-forwarded-for") ||
-    c.req.header("cf-connecting-ip") ||
-    "127.0.0.1";
-  return {
-    tenantId,
-    method: c.req.method,
-    path: c.req.path,
-    clientIp,
-    requestByteSize: isNaN(requestByteSize) ? 0 : requestByteSize,
-    responseByteSize: responseSize,
-    statusCode,
-    latencyMs: Date.now() - startTime,
-    timestamp: startTime,
-  };
+export const parseContentLength = (value: string | undefined | null): number => {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isNaN(parsed) || parsed < 0 ? 0 : parsed;
 };

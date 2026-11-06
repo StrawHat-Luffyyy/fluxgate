@@ -37,6 +37,14 @@ export class AppError extends Error {
     return new AppError(message, 409, code);
   }
 
+  static tooManyRequests(message: string, code = "TOO_MANY_REQUESTS"): AppError {
+    return new AppError(message, 429, code);
+  }
+
+  static serviceUnavailable(message: string, code = "SERVICE_UNAVAILABLE"): AppError {
+    return new AppError(message, 503, code);
+  }
+
   static internal(message: string, code = "INTERNAL_ERROR"): AppError {
     return new AppError(message, 500, code, false);
   }

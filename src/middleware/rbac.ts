@@ -1,11 +1,12 @@
 import type { MiddlewareHandler } from "hono";
 import type { DashboardEnv } from "./dashBoardAuth.js";
 
-type Role = "admin" | "viewer";
+export type Role = "admin" | "viewer";
 
-export const requiredRole = (
-  allowedRoles: Role[],
-): MiddlewareHandler<DashboardEnv> => {
+const ROLE_RANK: Record<Role, number> = { viewer: 0, admin: 1 };
+
+/** Allows the given role and every role above it. */
+export const requiredRole = (minimum: Role): MiddlewareHandler<DashboardEnv> => {
   return async (c, next) => {
     const userRole = c.get("userRole");
     if (!userRole) {
@@ -14,7 +15,7 @@ export const requiredRole = (
         401,
       );
     }
-    if (!allowedRoles.includes(userRole)) {
+    if (ROLE_RANK[userRole] < ROLE_RANK[minimum]) {
       return c.json(
         {
           error: "Forbidden",
