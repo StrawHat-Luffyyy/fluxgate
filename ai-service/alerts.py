@@ -51,14 +51,25 @@ def sign(secret: str, timestamp: int, body: bytes) -> str:
     return f"t={timestamp},v1={mac.hexdigest()}"
 
 
+# Alert messages are shown to people, who should not need the wire names.
+FEATURE_LABELS = {
+    "requestByteSize": ("Request size", "bytes"),
+    "responseByteSize": ("Response size", "bytes"),
+    "latencyMs": ("Latency", "ms"),
+}
+
+
 def _message(result: ScoreResult) -> str:
     top, value = result.top_feature, result.top_feature_value
+    label, unit = FEATURE_LABELS.get(top, (top, ""))
+    amount = f"{value:,.0f} {unit}".rstrip()
     if result.detector == "range_guard":
+        forest = "also flagged it" if result.forest_flagged else "did not flag it"
         return (
-            f"{top} {value:,.0f} exceeds the range guard limit {result.guard_limit:,.0f} "
-            f"(a multiple of the largest value in the training data); the Isolation Forest did not flag it"
+            f"{label} {amount} exceeds the range guard limit {f'{result.guard_limit:,.0f} {unit}'.rstrip()} "
+            f"(a multiple of the largest value in the training data); the Isolation Forest {forest}"
         )
-    return f"Isolation Forest flagged abnormal traffic, driven mainly by {top} (value {value:,.0f})"
+    return f"Isolation Forest flagged abnormal traffic, driven mainly by {label.lower()} ({amount})"
 
 
 def build_payload(event: TrafficEvent, result: ScoreResult, model_version: str, now: Optional[datetime] = None) -> dict:

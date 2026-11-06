@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo, type ReactNode } from "react";
 import { CHART_HEIGHT, ChartMessage, TimeChart, type ChartSeries } from "@/components/charts";
-import { ErrorState, PageHeader, Panel, Skeleton } from "@/components/ui/primitives";
+import { ErrorState, PageHeader, Panel, Skeleton, StaleBanner } from "@/components/ui/primitives";
 import { CopyButton } from "@/components/ui/secret-dialog";
 import { Segmented } from "@/components/ui/switch";
 import { TableWrap } from "@/components/ui/table";
@@ -17,6 +17,7 @@ import {
   formatCount,
   formatLatency,
   formatPercent,
+  formatPercentTick,
   RANGE_LABEL,
 } from "@/lib/format";
 import { useKeys, useOverview, useRoutes } from "@/lib/queries";
@@ -30,6 +31,9 @@ const RANGES = [
 
 const parseRange = (raw: string | null): AnalyticsRange =>
   raw === "1h" || raw === "7d" ? raw : "24h";
+
+// Charts in a row share a baseline, even when one panel's description wraps.
+const CHART_BODY = "flex flex-col justify-end";
 
 type ChartRow = OverviewBucket & { errorRate: number | null };
 
@@ -60,7 +64,7 @@ function Stat({
   className?: string;
 }) {
   return (
-    <div className={`bg-surface px-4 py-3 ${className}`}>
+    <div className={`bg-surface px-4 py-3 ${className}`} data-testid={`stat-${label}`}>
       <dt className="text-xs text-fg-2">{label}</dt>
       <dd className="mt-0.5 text-2xl font-semibold tracking-tight tabular-nums">{value}</dd>
       <dd className="min-h-[18px] text-xs text-fg-3 tabular-nums">{detail}</dd>
@@ -160,9 +164,9 @@ function NoTraffic({ range }: { range: AnalyticsRange }) {
   );
 }
 
-function BucketTable({ rows, range }: { rows: ChartRow[]; range: AnalyticsRange }) {
+function BucketTable({ rows }: { rows: ChartRow[] }) {
   return (
-    <details className="group rounded-lg border border-line bg-surface">
+    <details className="rounded-lg border border-line bg-surface">
       <summary className="rounded-lg px-4 py-3 text-sm font-medium">
         Chart data as a table
       </summary>
@@ -183,7 +187,7 @@ function BucketTable({ rows, range }: { rows: ChartRow[]; range: AnalyticsRange 
         <tbody>
           {rows.map((row) => (
             <tr key={row.time}>
-              <td className="whitespace-nowrap">{formatBucket(row.time, range)}</td>
+              <td className="whitespace-nowrap">{formatBucket(row.time)}</td>
               <td className="num">{formatCount(row.requests)}</td>
               <td className="num">{formatCount(row.errors)}</td>
               <td className="num">{formatPercent(row.errorRate)}</td>
@@ -211,12 +215,15 @@ function Charts({ overview }: { overview: AnalyticsOverview }) {
     [overview.timeSeries],
   );
   const bucket = BUCKET_LABEL[range];
+  // The window starts and ends mid-bucket, so those two cover less time than the rest.
+  const partial = "First and last buckets are partial.";
+  const maxErrorRate = Math.max(...rows.map((row) => row.errorRate ?? 0));
   const window = RANGE_LABEL[range];
 
   return (
     <>
       <div className="grid gap-3 lg:grid-cols-2">
-        <Panel title="Traffic" description={`Requests ${bucket}`}>
+        <Panel title="Traffic" bodyClassName={CHART_BODY} description={`Requests ${bucket}. ${partial}`}>
           <TimeChart
             kind="bar"
             label={`Requests ${bucket}, ${formatCount(summary.totalRequests)} in the ${window}`}
@@ -230,8 +237,9 @@ function Charts({ overview }: { overview: AnalyticsOverview }) {
 
         <Panel
           title="Latency"
-          description={`Upstream time to headers, ${bucket}`}
-          actions={
+          bodyClassName={CHART_BODY}
+          description={`Gateway latency of upstream requests, ${bucket}. ${partial}`}
+          aside={
             <ul className="flex items-center gap-3 text-xs text-fg-2">
               {LATENCY.map((series) => (
                 <li key={series.key} className="flex items-center gap-1.5">
@@ -254,12 +262,14 @@ function Charts({ overview }: { overview: AnalyticsOverview }) {
               series={LATENCY}
               range={range}
               formatValue={formatLatency}
-              formatTick={(value) => (value >= 1000 ? `${value / 1000}s` : `${value}`)}
+              formatTick={(value) =>
+                value >= 1000 ? `${Number((value / 1000).toFixed(1))} s` : `${value} ms`
+              }
             />
           )}
         </Panel>
 
-        <Panel title="Error rate" description={`Share of requests answered 5xx, ${bucket}`}>
+        <Panel title="Error rate" bodyClassName={CHART_BODY} description={`Share of requests answered 5xx, ${bucket}. ${partial}`}>
           {summary.errorCount === 0 ? (
             <ChartMessage>No 5xx responses in the {window}.</ChartMessage>
           ) : (
@@ -271,12 +281,12 @@ function Charts({ overview }: { overview: AnalyticsOverview }) {
               range={range}
               formatValue={formatPercent}
               fractional
-              formatTick={(value) => `${Number((value * 100).toFixed(1))}%`}
+              formatTick={(value) => formatPercentTick(value, maxErrorRate)}
             />
           )}
         </Panel>
 
-        <Panel title="Rate-limit hits" description={`Requests answered 429, ${bucket}`}>
+        <Panel title="Rate-limit hits" bodyClassName={CHART_BODY} description={`Requests answered 429, ${bucket}. ${partial}`}>
           {summary.rateLimitedCount === 0 ? (
             <ChartMessage>No requests were rate limited in the {window}.</ChartMessage>
           ) : (
@@ -352,7 +362,7 @@ function Charts({ overview }: { overview: AnalyticsOverview }) {
         </Panel>
       </div>
 
-      <BucketTable rows={rows} range={range} />
+      <BucketTable rows={rows} />
     </>
   );
 }
@@ -374,7 +384,7 @@ export function OverviewView() {
   const pathname = usePathname();
   const params = useSearchParams();
   const range = parseRange(params.get("range"));
-  const { data, error, isPending, refetch } = useOverview(range);
+  const { data, dataUpdatedAt, error, isPending, refetch } = useOverview(range);
 
   return (
     <div className="flex flex-col gap-3">
@@ -396,6 +406,7 @@ export function OverviewView() {
         </Panel>
       ) : (
         <>
+          {error && <StaleBanner error={error} updatedAt={dataUpdatedAt} />}
           <StatStrip overview={data} />
           {isPending || !data ? (
             <ChartsSkeleton />

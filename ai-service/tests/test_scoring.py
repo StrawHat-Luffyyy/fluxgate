@@ -71,6 +71,12 @@ def test_fast_empty_and_small_error_responses_not_flagged(scorer, row):
     assert not scorer.score(dict(zip(FEATURE_NAMES, map(float, row)))).is_anomaly
 
 
+def test_forest_flagged_is_reported_whichever_detector_is_named(scorer):
+    flagged = scorer.score({"requestByteSize": 50_000_000, "responseByteSize": 50_000_000, "latencyMs": 90_000})
+    assert flagged.is_anomaly and flagged.forest_flagged is (flagged.score < 0)
+    assert not scorer.score({"requestByteSize": 0, "responseByteSize": 3000, "latencyMs": 60}).forest_flagged
+
+
 def test_range_guard_detector_and_multiplier(trained):
     from scoring import Scorer
     model, baseline, fmax = trained

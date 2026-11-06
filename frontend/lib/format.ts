@@ -56,13 +56,23 @@ export const formatRelative = (iso: string) => {
   return formatDate(iso);
 };
 
-export const formatBucket = (iso: string, range: AnalyticsRange) => {
-  const date = new Date(iso);
-  if (range === "7d") {
-    return date.toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
-  }
-  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+/**
+ * Enough decimals for an axis to tell its ticks apart at this scale, and no more: a
+ * chart topping out at 0.4% needs 0.1% steps, while one at 40% needs whole numbers.
+ */
+export const formatPercentTick = (fraction: number, maxFraction: number) => {
+  const decimals = maxFraction >= 0.1 ? 1 : maxFraction >= 0.01 ? 2 : maxFraction >= 0.001 ? 3 : 4;
+  return `${Number((fraction * 100).toFixed(decimals))}%`;
 };
+
+/** Always has the date. Minutes stay too: buckets align to UTC, which is :30 in some zones. */
+export const formatBucket = (iso: string) => formatDateTime(iso);
+
+/** Within an hour the date only adds noise, and the tooltip still gives it. */
+export const formatBucketTick = (iso: string, range: AnalyticsRange) =>
+  range === "1h"
+    ? new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    : formatDateTime(iso);
 
 export const RANGE_LABEL: Record<AnalyticsRange, string> = {
   "1h": "last hour",

@@ -34,13 +34,9 @@ export const useMe = () =>
     queryKey: queryKeys.me,
     queryFn: ({ signal }) => api<{ user: Me }>("/auth/me", { signal }).then((r) => r.user),
     staleTime: 30_000,
+    // A role can change while this page is open. A 403 also triggers a refresh.
+    refetchInterval: 60_000,
   });
-
-/**
- * The gateway enforces roles. This only decides what to offer. It is false until
- * /auth/me answers, so a viewer never sees an action flash in and disappear.
- */
-export const useCanEdit = () => useMe().data?.role === "admin";
 
 export const useOverview = (range: AnalyticsRange) =>
   useQuery({

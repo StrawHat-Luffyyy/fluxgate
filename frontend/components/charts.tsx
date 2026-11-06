@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { formatBucket } from "@/lib/format";
+import { formatBucket, formatBucketTick } from "@/lib/format";
 import type { AnalyticsRange } from "@/lib/types";
 
 export const CHART_HEIGHT = 208;
@@ -34,21 +34,19 @@ function ChartTooltip<Row>({
   active,
   payload,
   label,
-  range,
   series,
   format,
 }: {
   active?: boolean;
   payload?: readonly TooltipEntry[];
   label?: unknown;
-  range: AnalyticsRange;
   series: ChartSeries<Row>[];
   format: (value: number | null) => string;
 }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-md border border-line-strong bg-surface px-2.5 py-2 text-xs shadow-pop">
-      <p className="mb-1 text-fg-3">{formatBucket(String(label), range)}</p>
+      <p className="mb-1 text-fg-3">{formatBucket(String(label))}</p>
       <ul className="flex flex-col gap-0.5 tabular-nums">
         {series.map((entry) => {
           const value = payload.find((item) => item.dataKey === entry.key)?.value;
@@ -103,16 +101,16 @@ export function TimeChart<Row extends { time: string }>({
     <XAxis
       key="x"
       dataKey="time"
-      tickFormatter={(value) => formatBucket(String(value), range)}
+      tickFormatter={(value) => formatBucketTick(String(value), range)}
       tick={axisTick}
       tickLine={false}
       axisLine={{ stroke: "var(--line-strong)" }}
-      minTickGap={48}
+      minTickGap={56}
       interval="preserveStartEnd"
     />,
     <YAxis
       key="y"
-      width={44}
+      width={56}
       tick={axisTick}
       tickLine={false}
       axisLine={false}
@@ -128,7 +126,6 @@ export function TimeChart<Row extends { time: string }>({
           active={props.active}
           payload={props.payload as readonly TooltipEntry[] | undefined}
           label={props.label}
-          range={range}
           series={series}
           format={formatValue}
         />

@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import {
   expect,
   GATEWAY_URL,
+  guardMessage,
   logIn,
   PASSWORD,
   postAlert,
@@ -90,14 +91,15 @@ test("every page, desktop and mobile, light and dark", async ({ page, request, b
   await postAlert(request, tenantId);
   await postAlert(request, tenantId, {
     detector: "range_guard",
+    score: 0.012,
     topFeature: "responseByteSize",
     topFeatureValue: 52_428_800,
-    attribution: { responseByteSize: -2.41, latencyMs: 0.18, requestByteSize: 0.05 },
+    attribution: { responseByteSize: 0.41, latencyMs: 0.18, requestByteSize: 0.05 },
     features: { latencyMs: 212, responseByteSize: 52_428_800, requestByteSize: 340 },
-    message: "Response of 50 MB is far outside the range seen in training",
+    message: guardMessage("did not flag it"),
   });
   await postAlert(request, tenantId, {
-    message: "Request size of 8 MB is unusual for this traffic",
+    message: "Isolation Forest flagged abnormal traffic, driven mainly by request size (8,388,608 bytes)",
     topFeature: "requestByteSize",
     topFeatureValue: 8_388_608,
     attribution: { requestByteSize: -1.87, latencyMs: -0.12, responseByteSize: 0.33 },
@@ -148,7 +150,7 @@ test("every page, desktop and mobile, light and dark", async ({ page, request, b
     await shoot(page, `rate-limit-${variant}`);
 
     await page.goto("/anomalies");
-    await page.getByTestId("anomaly-row").filter({ hasText: "50 MB" }).getByRole("button").first().click();
+    await page.getByTestId("anomaly-row").filter({ hasText: "range guard limit" }).getByRole("button").first().click();
     await shoot(page, `anomalies-${variant}`);
 
     await page.goto("/webhooks");

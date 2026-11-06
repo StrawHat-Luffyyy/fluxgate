@@ -4,6 +4,7 @@ import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@ta
 import { useState, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { ApiError } from "@/lib/api";
+import { queryKeys } from "@/lib/queries";
 import { useThemeChoice } from "@/lib/theme";
 
 /** A 401 anywhere means the session ended, so go to login and come back afterwards. */
@@ -14,10 +15,17 @@ const redirectOnExpiredSession = (err: unknown) => {
   window.location.assign(`/login?next=${encodeURIComponent(pathname + search)}`);
 };
 
-const makeClient = () =>
-  new QueryClient({
-    queryCache: new QueryCache({ onError: redirectOnExpiredSession }),
-    mutationCache: new MutationCache({ onError: redirectOnExpiredSession }),
+const makeClient = () => {
+  const onError = (err: unknown) => {
+    redirectOnExpiredSession(err);
+    // A 403 means the role this page was drawn for is out of date, as after a demotion.
+    if (err instanceof ApiError && err.status === 403) {
+      client.invalidateQueries({ queryKey: queryKeys.me });
+    }
+  };
+  const client: QueryClient = new QueryClient({
+    queryCache: new QueryCache({ onError }),
+    mutationCache: new MutationCache({ onError }),
     defaultOptions: {
       queries: {
         staleTime: 5_000,
@@ -27,6 +35,8 @@ const makeClient = () =>
       },
     },
   });
+  return client;
+};
 
 export default function Providers({ children }: { children: ReactNode }) {
   const [client] = useState(makeClient);

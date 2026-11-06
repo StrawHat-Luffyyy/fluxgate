@@ -4,8 +4,8 @@ import { useMutation } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
-import { FormError, TextField } from "@/components/ui/field";
-import { api, errorMessage } from "@/lib/api";
+import { FormError, TextField, useFocusFirstInvalid } from "@/components/ui/field";
+import { api, fieldErrorFrom } from "@/lib/api";
 import { validateEmail, validateNewPassword, validateTenantName } from "@/lib/validate";
 
 type Errors = { tenantName?: string; email?: string; password?: string };
@@ -15,6 +15,8 @@ export function SignupForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<Errors>({});
+  const [formError, setFormError] = useState<string>();
+  useFocusFirstInvalid(errors);
 
   // Signup creates the tenant and its admin but no session, so sign in straight after.
   const signup = useMutation({
@@ -27,6 +29,11 @@ export function SignupForm() {
       await api("/auth/login", { method: "POST", body: credentials });
     },
     onSuccess: () => window.location.assign("/overview"),
+    onError: (err) => {
+      const { field, message } = fieldErrorFrom(err, ["tenantName", "email", "password"]);
+      if (field) setErrors({ [field]: message });
+      else setFormError(message);
+    },
   });
 
   const submit = (event: FormEvent) => {
@@ -37,6 +44,7 @@ export function SignupForm() {
       password: validateNewPassword(password),
     };
     setErrors(found);
+    setFormError(undefined);
     if (!found.tenantName && !found.email && !found.password) signup.mutate();
   };
 
@@ -46,7 +54,7 @@ export function SignupForm() {
         <h1 className="text-lg font-semibold tracking-tight">Create a workspace</h1>
         <p className="text-sm text-fg-2">You will be its first admin.</p>
       </div>
-      <FormError>{signup.isError && errorMessage(signup.error)}</FormError>
+      <FormError>{formError}</FormError>
       <TextField
         label="Workspace name"
         autoComplete="organization"

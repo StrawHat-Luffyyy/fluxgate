@@ -27,31 +27,39 @@ export function PageHeader({
 export function Panel({
   title,
   description,
+  aside,
   actions,
   children,
   className = "",
+  bodyClassName = "",
   flush = false,
 }: {
   title?: string;
   description?: ReactNode;
+  /** Sits on the title's own line, for something small like a legend. */
+  aside?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  bodyClassName?: string;
   /** Lets a table run to the panel's edges. */
   flush?: boolean;
 }) {
   return (
-    <section className={`min-w-0 rounded-lg border border-line bg-surface ${className}`}>
+    <section className={`flex min-w-0 flex-col rounded-lg border border-line bg-surface ${className}`}>
       {title && (
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-line px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">{title}</h2>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center justify-between gap-x-4">
+              <h2 className="text-sm font-semibold">{title}</h2>
+              {aside}
+            </div>
             {description && <p className="text-xs text-fg-3">{description}</p>}
           </div>
           {actions}
         </div>
       )}
-      {flush ? children : <div className="p-4">{children}</div>}
+      {flush ? children : <div className={`flex-1 p-4 ${bodyClassName}`}>{children}</div>}
     </section>
   );
 }
@@ -126,6 +134,25 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
         </Button>
       )}
     </div>
+  );
+}
+
+/**
+ * Shown above data that a refresh failed to replace. Without it, stale numbers look
+ * exactly like live ones.
+ */
+export function StaleBanner({ error, updatedAt }: { error: unknown; updatedAt: number }) {
+  return (
+    <p
+      role="alert"
+      className="flex items-start gap-2 rounded-md bg-warn-soft px-3 py-2 text-sm text-warn"
+    >
+      <AlertCircle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+      <span>
+        Could not refresh this page: {errorMessage(error)} Showing data from{" "}
+        {new Date(updatedAt).toLocaleTimeString()}. Retrying automatically.
+      </span>
+    </p>
   );
 }
 

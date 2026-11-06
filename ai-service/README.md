@@ -60,9 +60,11 @@ mixture that imitates a generic JSON API:
 
 Every parameter is an assumption, not a measurement of any real system. (The first version used ~500 request bytes on every request, so every real GET looked
 anomalous; the second lacked empty and fast responses, so 204/304 responses were flagged.) Features go through
-`log1p` before the forest because the raw values are heavy-tailed. SHAP is computed in that
-`log1p` space and keyed by the original feature names; `topFeatureValue` and `features` in the
-alert are raw units. A SHAP value is therefore "contribution in log space", not bytes or ms.
+`log1p` before the forest because the raw values are heavy-tailed. SHAP takes those `log1p`
+features as input and is keyed by the original feature names; `topFeatureValue` and `features` in
+the alert are raw units. A SHAP value is in isolation-tree path length, not bytes or ms: the splits
+a feature added to or removed from the average path. Negative means easier to isolate, so more
+anomalous; positive means more normal.
 
 **Contamination** (`0.01`) is the share of the training data the forest is told to treat as
 outliers; it sets the decision threshold. The expected flag rate on normal traffic is thus a

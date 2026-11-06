@@ -1,4 +1,4 @@
-import { expect, logIn, signUp, startServer, test, viaGateway } from "./support";
+import { expect, logIn, signUp, startServer, test, viaGateway, withDb } from "./support";
 
 test("creates a key, shows the secret once, and rotation and revocation really take effect", async ({
   page,
@@ -81,4 +81,50 @@ test("creates a key, shows the secret once, and rotation and revocation really t
   expect(await viaGateway(request, rotated, "/echo/ping")).toBe(401);
 
   await upstream.close();
+});
+
+test("rotation states the expiry it inherits, and an expired key cannot be rotated", async ({
+  page,
+  request,
+}) => {
+  await logIn(page, await signUp(request, "expiry"));
+  await page.goto("/keys");
+
+  await page.getByRole("button", { name: "Create your first key" }).click();
+  await page.getByLabel("Name").fill("short-lived");
+  await page.getByLabel("Expires after (days)").fill("30");
+  await page.getByRole("dialog").getByRole("button", { name: "Create key" }).click();
+  await page.getByRole("button", { name: "I have stored it" }).click();
+
+  await page.getByRole("button", { name: "Create key" }).click();
+  await page.getByLabel("Name").fill("long-lived");
+  await page.getByRole("dialog").getByRole("button", { name: "Create key" }).click();
+  await page.getByRole("button", { name: "I have stored it" }).click();
+
+  // Formatted in the browser, whose locale is the one the dialog uses.
+  const expiry = await page.evaluate(() =>
+    new Date(Date.now() + 30 * 86_400_000).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }),
+  );
+  await page.getByRole("button", { name: "Rotate short-lived" }).click();
+  await expect(page.getByRole("dialog")).toContainText(`The new key keeps the same expiry: ${expiry}.`);
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  await page.getByRole("button", { name: "Rotate long-lived" }).click();
+  await expect(page.getByRole("dialog")).toContainText("The new key does not expire");
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  // The API never creates a key in the past, so this one is aged in the database.
+  await withDb(
+    (sql) => sql`update api_keys set expires_at = now() - interval '1 day' where name = 'short-lived'`,
+  );
+  await page.reload();
+  const expired = page.getByTestId("key-short-lived");
+  await expect(expired).toHaveAttribute("data-state", "expired");
+  await expect(expired.getByRole("button", { name: /Rotate/ })).toHaveCount(0);
+  await expect(expired.getByRole("button", { name: /Revoke/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rotate long-lived" })).toBeVisible();
 });

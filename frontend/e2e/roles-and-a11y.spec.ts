@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import {
   expect,
+  FOREST_MESSAGE,
   GATEWAY_URL,
   logIn,
   PASSWORD,
@@ -60,7 +61,7 @@ test("a viewer sees the data but is offered no action the API would refuse", asy
 
   await page.goto("/anomalies");
   const row = page.getByTestId("anomaly-row");
-  await row.getByRole("button", { name: /Latency of 4200 ms/ }).click();
+  await row.getByRole("button", { name: FOREST_MESSAGE }).click();
   await expect(row.getByRole("list", { name: "SHAP attribution by feature" })).toBeVisible();
   await expect(row.getByRole("button", { name: /Acknowledge|Resolve|Reopen/ })).toHaveCount(0);
 
@@ -75,6 +76,45 @@ test("a viewer sees the data but is offered no action the API would refuse", asy
   await expect(page.getByRole("combobox")).toHaveCount(0);
 
   await admin.close();
+});
+
+test.describe("demotion while the page is open", () => {
+  test.use({ expectedHttpErrors: [403] });
+
+  test("a 403 takes the admin actions away", async ({ page, request, browser }) => {
+    const first = await signUp(request, "demoted");
+    await logIn(page, first);
+
+    const other = await browser.newPage();
+    await logIn(other, first);
+    const secondEmail = uniqueEmail("promoter");
+    await other.request.post(`${GATEWAY_URL}/team`, {
+      data: { email: secondEmail, password: PASSWORD, role: "admin" },
+    });
+    await logIn(other, { email: secondEmail, password: PASSWORD });
+
+    await page.goto("/routes");
+    await page.getByRole("button", { name: "Create your first route" }).click();
+    await page.getByLabel("Path prefix").fill("late");
+    await page.getByLabel("Target URL").fill("http://127.0.0.1:9/");
+
+    // The other admin demotes this one before they press save.
+    const team = await (await other.request.get(`${GATEWAY_URL}/team`)).json();
+    const me = team.members.find((member: { email: string }) => member.email === first.email);
+    const demoted = await other.request.patch(`${GATEWAY_URL}/team/${me.id}`, {
+      data: { role: "viewer" },
+    });
+    expect(demoted.status()).toBe(200);
+
+    await page.getByRole("dialog").getByRole("button", { name: "Create route" }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "do not have permission" })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+
+    await expect(page.getByTestId("identity")).toContainText("Viewer");
+    await expect(page.getByText("Read-only: an admin can change this")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Create/ })).toHaveCount(0);
+    await other.close();
+  });
 });
 
 test.describe("last admin", () => {
@@ -137,6 +177,37 @@ test("no serious accessibility violations on any page, in either theme", async (
       expect(serious).toEqual([]);
     }
   }
+});
+
+test("every control is a large enough target on a phone", async ({ page, request }) => {
+  await logIn(page, await signUp(request, "targets"));
+  await seedWorkspace(page);
+  await page.setViewportSize({ width: 375, height: 800 });
+  for (const path of PAGES) {
+    await page.goto(path);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    const results = await new AxeBuilder({ page }).withRules(["target-size"]).analyze();
+    const small = results.violations.flatMap((v) => v.nodes.map((n) => `${path} ${n.target.join(" ")}`));
+    expect(small).toEqual([]);
+  }
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  const drawer = await new AxeBuilder({ page }).withRules(["target-size"]).analyze();
+  expect(drawer.violations.flatMap((v) => v.nodes.map((n) => n.target.join(" ")))).toEqual([]);
+});
+
+test("the theme switcher follows the radio group keyboard pattern", async ({ page, request }) => {
+  await logIn(page, await signUp(request, "theme"));
+  await page.goto("/keys");
+  const group = page.getByRole("radiogroup", { name: "Theme" });
+  await expect(group.getByRole("radio", { name: "Light" })).toHaveAttribute("tabindex", "-1");
+  await group.getByRole("radio", { name: "System" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(group.getByRole("radio", { name: "Light" })).toBeFocused();
+  await expect(group.getByRole("radio", { name: "Light" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
 
 test.describe("signed out pages", () => {

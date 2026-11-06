@@ -4,15 +4,17 @@
 export const validateEmail = (value: string) => {
   const email = value.trim();
   if (!email) return "Enter an email address.";
-  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(email)) {
     return "Enter a valid email address, like you@company.com.";
   }
 };
 
 export const validateNewPassword = (value: string) => {
   if (value.length < 10) return "Use at least 10 characters.";
-  // bcrypt ignores input past 72 bytes, and the gateway refuses it.
-  if (value.length > 72) return "Use 72 characters or fewer.";
+  // bcrypt only uses the first 72 bytes, not characters, so the gateway refuses more.
+  if (new TextEncoder().encode(value).length > 72) {
+    return "Use 72 bytes or fewer. Accented letters and emoji count as more than one.";
+  }
 };
 
 export const validateTenantName = (value: string) => {

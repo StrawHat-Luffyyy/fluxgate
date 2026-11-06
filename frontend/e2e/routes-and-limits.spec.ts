@@ -85,6 +85,13 @@ test("saves a rate limit that the gateway then enforces", async ({ page, request
   await save.click();
   await expect(page.getByText("Capacity must be between 1 and 1,000,000.")).toBeVisible();
 
+  // The leaky bucket is described as what it is: a meter that refuses, not a queue.
+  await page.getByRole("radio", { name: /Leaky bucket/ }).check();
+  await expect(page.getByText(/refused at once, never queued/)).toBeVisible();
+  await page.getByLabel("Capacity", { exact: true }).fill("100");
+  await expect(summary).toContainText("gets a 429 straight away");
+  await expect(summary).not.toContainText("outstanding");
+
   // Only the sliding window takes a window length.
   await page.getByRole("radio", { name: /Sliding window/ }).check();
   await expect(page.getByLabel("Window (seconds)")).toBeVisible();

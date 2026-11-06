@@ -6,7 +6,13 @@ import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button, IconButton } from "@/components/ui/button";
 import { ConfirmDialog, Modal } from "@/components/ui/dialog";
-import { FormError, InlineSelect, SelectField, TextField } from "@/components/ui/field";
+import {
+  FormError,
+  InlineSelect,
+  SelectField,
+  TextField,
+  useFocusFirstInvalid,
+} from "@/components/ui/field";
 import {
   Badge,
   EmptyState,
@@ -30,6 +36,7 @@ function AddMemberDialog({ onClose }: { onClose: () => void }) {
   const [role, setRole] = useState<Role>("viewer");
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
   const [formError, setFormError] = useState<string>();
+  useFocusFirstInvalid(errors);
 
   const add = useMutation({
     mutationFn: () =>

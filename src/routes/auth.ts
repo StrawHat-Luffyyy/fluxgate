@@ -21,8 +21,12 @@ const authRouter = new Hono<DashboardEnv>();
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 
 const email = z.email().max(254);
-// bcrypt ignores input past 72 bytes.
-const newPassword = z.string().min(10, "must be at least 10 characters").max(72);
+// bcrypt only uses the first 72 bytes, so a longer password would be silently cut.
+// Counted in bytes: z.string().max() counts characters, and many take more than one.
+const newPassword = z
+  .string()
+  .min(10, "must be at least 10 characters")
+  .refine((value) => Buffer.byteLength(value, "utf8") <= 72, "must be at most 72 bytes");
 
 const signupSchema = z.object({
   tenantName: z.string().trim().min(2).max(80),

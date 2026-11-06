@@ -6,7 +6,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button, IconButton } from "@/components/ui/button";
 import { ConfirmDialog, Modal } from "@/components/ui/dialog";
-import { FormError, InlineSelect, TextField } from "@/components/ui/field";
+import { FormError, InlineSelect, TextField, useFocusFirstInvalid } from "@/components/ui/field";
 import {
   Badge,
   EmptyState,
@@ -50,35 +50,36 @@ function EndpointDialog({
 }) {
   const client = useQueryClient();
   const [url, setUrl] = useState(endpoint?.url ?? "");
-  const [urlError, setUrlError] = useState<string>();
+  const [errors, setErrors] = useState<{ url?: string }>({});
   const [formError, setFormError] = useState<string>();
+  useFocusFirstInvalid(errors);
 
   const save = useMutation({
-    mutationFn: () =>
-      endpoint
-        ? api<{ secret?: undefined }>(`/webhooks/${endpoint.id}`, {
-            method: "PATCH",
-            body: { url: url.trim() },
-          })
-        : api<{ secret?: string }>("/webhooks", {
-            method: "POST",
-            body: { url: url.trim() },
-          }),
-    onSuccess: (result) => {
+    // The secret is handed over here rather than returned, so that it never becomes
+    // mutation data, which the query cache would hold on to.
+    mutationFn: async () => {
+      const body = { url: url.trim() };
+      if (endpoint) {
+        await api(`/webhooks/${endpoint.id}`, { method: "PATCH", body });
+        return;
+      }
+      const { secret } = await api<{ secret: string }>("/webhooks", { method: "POST", body });
+      onCreated?.(secret);
+    },
+    onSuccess: () => {
       client.invalidateQueries({ queryKey: queryKeys.endpoints });
-      if (result.secret) onCreated?.(result.secret);
-      else {
+      if (endpoint) {
         toast.success("Endpoint updated");
         onClose();
       }
     },
     onError: (err) => {
       if (err instanceof ApiError && err.code === "UNSAFE_TARGET_URL") {
-        setUrlError(err.message);
+        setErrors({ url: err.message });
         return;
       }
       const { field, message } = fieldErrorFrom(err, ["url"]);
-      if (field) setUrlError(message);
+      if (field) setErrors({ url: message });
       else setFormError(message);
     },
   });
@@ -86,7 +87,7 @@ function EndpointDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const found = validateHttpUrl(url);
-    setUrlError(found);
+    setErrors({ url: found });
     setFormError(undefined);
     if (!found) save.mutate();
   };
@@ -116,7 +117,7 @@ function EndpointDialog({
         data-autofocus
         placeholder="https://hooks.example.com/fluxgate"
         value={url}
-        error={urlError}
+        error={errors.url}
         hint="Private and metadata addresses are refused."
         onChange={(event) => setUrl(event.target.value)}
       />

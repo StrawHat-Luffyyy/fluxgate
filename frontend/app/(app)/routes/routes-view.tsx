@@ -6,7 +6,7 @@ import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button, IconButton } from "@/components/ui/button";
 import { ConfirmDialog, Modal } from "@/components/ui/dialog";
-import { FormError, TextField } from "@/components/ui/field";
+import { FormError, TextField, useFocusFirstInvalid } from "@/components/ui/field";
 import { EmptyState, ErrorState, PageHeader, Panel, ReadOnlyNote, TableSkeleton } from "@/components/ui/primitives";
 import { CopyIconButton } from "@/components/ui/secret-dialog";
 import { TableWrap } from "@/components/ui/table";
@@ -24,6 +24,7 @@ function RouteDialog({ route, onClose }: { route?: GatewayRoute; onClose: () => 
   const [targetUrl, setTargetUrl] = useState(route?.targetUrl ?? "");
   const [errors, setErrors] = useState<{ pathPrefix?: string; targetUrl?: string }>({});
   const [formError, setFormError] = useState<string>();
+  useFocusFirstInvalid(errors);
 
   const save = useMutation({
     mutationFn: () => {

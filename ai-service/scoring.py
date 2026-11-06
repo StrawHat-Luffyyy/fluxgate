@@ -41,6 +41,7 @@ class ScoreResult:
     top_feature_value: Optional[float] = None
     detector: Optional[str] = None  # "forest" or "range_guard"
     guard_limit: Optional[float] = None  # raw-unit limit that was exceeded (range_guard only)
+    forest_flagged: bool = False  # whether the forest flagged it, whichever detector is named
 
 
 def _required_str(payload: dict, key: str) -> str:
@@ -142,10 +143,15 @@ class Scorer:
             top_feature_value=float(features[top]),  # raw units, not log space
             detector="range_guard" if exceeded else "forest",
             guard_limit=self.guard_multiplier * self.feature_max[top] if exceeded else None,
+            forest_flagged=forest_flag,
         )
 
     def explain(self, x_model_space: np.ndarray) -> tuple[dict[str, float], str]:
-        """SHAP values (in log1p space) keyed by original feature name, plus the top |shap| feature."""
+        """SHAP values keyed by original feature name, plus the top |shap| feature.
+
+        Inputs are log1p features, but the values are in isolation-tree path length: splits added
+        to or removed from the average path. Negative means easier to isolate, so more anomalous.
+        """
         values = self._get_explainer().shap_values(x_model_space)
         if isinstance(values, list):
             values = values[0]

@@ -17,6 +17,7 @@ import {
   PageHeader,
   Panel,
   ReadOnlyNote,
+  StaleBanner,
   TableSkeleton,
   type BadgeTone,
 } from "@/components/ui/primitives";
@@ -63,9 +64,10 @@ const DETECTORS: Record<string, string> = {
 };
 
 /**
- * SHAP values share a scale but not a sign. Isolation Forest output falls as a point
- * gets easier to isolate, so a negative value is a push toward anomalous. Bars grow
- * out from a central zero, and each row also says which way it pushed.
+ * Values are in isolation-tree path length: the splits a feature added to or removed
+ * from the average path. A shorter path means easier to isolate, so a negative value
+ * is a push toward anomalous. Bars grow out from a central zero, and each row also
+ * says which way it pushed.
  */
 function Attribution({ attribution }: { attribution: Record<string, number> }) {
   const rows = Object.entries(attribution).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
@@ -106,12 +108,61 @@ function Attribution({ attribution }: { attribution: Record<string, number> }) {
   );
 }
 
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+function Fact({
+  label,
+  detail,
+  children,
+}: {
+  label: string;
+  detail?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <dt className="text-xs text-fg-3">{label}</dt>
       <dd className="text-sm break-words tabular-nums">{children}</dd>
+      {detail && <dd className="text-xs text-fg-3">{detail}</dd>}
     </div>
+  );
+}
+
+const SHAP_UNITS =
+  "Each value is how many splits this feature added to or removed from the average isolation-tree path for this request, not bytes or milliseconds. Fewer splits (negative) means the request is easier to isolate, which pushes it toward anomalous. More splits (positive) pushes it toward normal.";
+
+/**
+ * A forest decision below zero is what the model itself calls an outlier. A range
+ * guard alert fires regardless, so its bars are not the reason for the alert: often
+ * the forest considered the same request normal.
+ */
+function WhyFlagged({ anomaly }: { anomaly: Anomaly }) {
+  if (anomaly.detector !== "range_guard") {
+    return (
+      <section aria-label="Why this was flagged">
+        <h3 className="text-sm font-semibold">Why this was flagged</h3>
+        <p className="mt-0.5 mb-3 max-w-[70ch] text-xs text-fg-2">{SHAP_UNITS}</p>
+        <Attribution attribution={anomaly.attribution} />
+      </section>
+    );
+  }
+  return (
+    <>
+      <section aria-label="Why this was flagged">
+        <h3 className="text-sm font-semibold">Why this was flagged</h3>
+        <p className="mt-0.5 max-w-[70ch] text-sm text-fg-2">
+          A feature went over the range guard&apos;s limit, which is set from the largest values
+          in the training data. The limit applies whatever the model thinks of the request.
+        </p>
+        <p className="mt-2 max-w-[70ch] text-sm">{anomaly.message}</p>
+      </section>
+      <section aria-label="What the Isolation Forest saw" className="border-t border-line pt-4">
+        <h3 className="text-sm font-semibold">What the Isolation Forest saw</h3>
+        <p className="mt-0.5 mb-3 max-w-[70ch] text-xs text-fg-2">
+          This is the model&apos;s view, not the reason for this alert. The model{" "}
+          {anomaly.score < 0 ? "also flagged" : "did not flag"} this request. {SHAP_UNITS}
+        </p>
+        <Attribution attribution={anomaly.attribution} />
+      </section>
+    </>
   );
 }
 
@@ -126,16 +177,7 @@ function AnomalyDetail({
 }) {
   return (
     <div className="flex flex-col gap-4 border-t border-line bg-sunken px-4 py-4">
-      <section aria-label="Why this was flagged">
-        <h3 className="text-sm font-semibold">Why this was flagged</h3>
-        <p className="mt-0.5 mb-3 max-w-[70ch] text-xs text-fg-2">
-          SHAP values, in the model&apos;s log scale rather than bytes or milliseconds. Negative
-          values moved this request toward anomalous, positive values toward normal.
-          {anomaly.detector === "range_guard" &&
-            " The range guard flagged this because a feature was far above anything seen in training, so the named feature comes from that check, not from the largest SHAP value."}
-        </p>
-        <Attribution attribution={anomaly.attribution} />
-      </section>
+      <WhyFlagged anomaly={anomaly} />
 
       <dl className="grid grid-cols-2 gap-3 border-t border-line pt-4 sm:grid-cols-3 lg:grid-cols-6">
         {Object.entries(anomaly.features).map(([name, value]) => (
@@ -144,7 +186,12 @@ function AnomalyDetail({
           </Fact>
         ))}
         <Fact label="Detector">{DETECTORS[anomaly.detector] ?? anomaly.detector}</Fact>
-        <Fact label="Model score">{anomaly.score.toFixed(3)}</Fact>
+        <Fact
+          label="Model score"
+          detail={anomaly.score < 0 ? "Below 0: anomalous to the model" : "0 or above: normal to the model"}
+        >
+          {anomaly.score.toFixed(3)}
+        </Fact>
         <Fact label="Model version">
           <span className="font-mono text-xs">{anomaly.modelVersion}</span>
         </Fact>
@@ -298,6 +345,11 @@ export function AnomaliesView() {
       <div className="mb-3 overflow-x-auto">
         <Segmented label="Filter by status" value={filter} options={FILTERS} onChange={setFilter} />
       </div>
+      {query.isError && anomalies.length > 0 && (
+        <div className="mb-3">
+          <StaleBanner error={query.error} updatedAt={query.dataUpdatedAt} />
+        </div>
+      )}
       <Panel flush>
         {query.isPending ? (
           <TableSkeleton />
