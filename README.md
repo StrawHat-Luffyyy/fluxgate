@@ -56,44 +56,15 @@ Traditional security rules miss novel zero-day attacks and traffic anomalies. **
 
 ---
 
-## Performance Benchmarks & Rate-Limiter Analysis
+## Benchmarks
 
-Evaluated across **50, 200, 500, and 1000 concurrent workers** using `npx tsx tests/load-test-runner.ts`.
+The numbers previously published here came from a harness that could silently fall back to an in-memory mock of Redis, and whose "end-to-end" section only requested `/health`. They have been removed. To produce real numbers, with Postgres, Redis and Redpanda running and k6 installed:
 
-### Benchmark Environment Specs
-- **CPU**: 12th Gen Intel(R) Core(TM) i5-12450H (12 logical cores)
-- **RAM**: 15.7 GB
-- **OS**: Windows x64 / Node.js v24.11.1 / Redis 7
+```bash
+pnpm bench
+```
 
-### 1. Redis Rate-Limiter Engine Benchmarks
-*Scope: Measures direct Lua script evaluation throughput & atomicity inside Redis.*
-
-| Algorithm | Concurrency (Workers) | Engine Req/Sec | p50 Latency (ms) | p95 Latency (ms) | p99 Latency (ms) | Script Throttling Accuracy |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Sliding Window** | 50 | **29,553 req/s** | 0.47 ms | 0.94 ms | 1.43 ms | **100.0% (0 drift)\*** |
-| **Sliding Window** | 200 | **63,448 req/s** | 2.28 ms | 2.84 ms | 2.88 ms | **100.0% (0 drift)\*** |
-| **Sliding Window** | 500 | **67,012 req/s** | 3.01 ms | 5.13 ms | 5.24 ms | **100.0% (0 drift)\*** |
-| **Sliding Window** | 1000 | **70,216 req/s** | 7.95 ms | 12.91 ms | 13.16 ms | **100.0% (0 drift)\*** |
-| **Token Bucket** | 50 | **7,521 req/s** | 6.38 ms | 6.43 ms | 6.59 ms | **100.0% (0 drift)\*** |
-| **Token Bucket** | 200 | **2,67,023 req/s** | 0.39 ms | 0.60 ms | 0.62 ms | **100.0% (0 drift)\*** |
-| **Token Bucket** | 500 | **88,838 req/s** | 1.01 ms | 5.24 ms | 5.28 ms | **100.0% (0 drift)\*** |
-| **Token Bucket** | 1000 | **89,079 req/s** | 5.87 ms | 7.04 ms | 7.13 ms | **100.0% (0 drift)\*** |
-| **Leaky Bucket** | 50 | **1,14,705 req/s** | 0.15 ms | 0.23 ms | 0.39 ms | **100.0% (0 drift)\*** |
-| **Leaky Bucket** | 200 | **41,335 req/s** | 4.34 ms | 4.68 ms | 4.71 ms | **100.0% (0 drift)\*** |
-| **Leaky Bucket** | 500 | **73,895 req/s** | 4.74 ms | 5.65 ms | 5.73 ms | **100.0% (0 drift)\*** |
-| **Leaky Bucket** | 1000 | **88,633 req/s** | 8.37 ms | 9.66 ms | 9.77 ms | **100.0% (0 drift)\*** |
-
-> **\*Note on 100.0% Throttling Accuracy**: Single-node Redis Lua scripts execute atomically on a single thread. Inside a single Redis instance, check-and-set operations are atomic, guaranteeing 0 race conditions at the Redis script boundary. In multi-region distributed Redis clusters with asynchronous replication, boundary drift (~1-3%) occurs due to replication lag.
-
-### 2. End-to-End Gateway HTTP Throughput
-*Scope: Measures full end-to-end request processing through Hono HTTP router, middleware stack, header extraction, and JSON response serialization.*
-
-| Concurrency (Workers) | Gateway End-to-End Req/Sec | p50 Latency (ms) | p95 Latency (ms) | p99 Latency (ms) |
-| :---: | :---: | :---: | :---: | :---: |
-| 50 | **1,460 req/s** | 22.85 ms | 25.01 ms | 34.09 ms |
-| 200 | **4,787 req/s** | 38.00 ms | 41.18 ms | 41.48 ms |
-| 500 | **7,541 req/s** | 58.30 ms | 63.12 ms | 65.35 ms |
-| 1000 | **10,234 req/s** | 90.94 ms | 96.57 ms | 97.19 ms |
+It writes `docs/benchmarks/results.md`, and aborts instead of reporting if a dependency is down or the gateway degrades during the run.
 
 ---
 
@@ -114,18 +85,21 @@ Evaluated across **50, 200, 500, and 1000 concurrent workers** using `npx tsx te
 ## Local Quickstart & Testing
 
 ```bash
-# 1. Clone & install dependencies
 pnpm install
 
-# 2. Start PostgreSQL, Redis, & Kafka via Docker Compose
-docker-compose up -d
+# Postgres, Redis and Redpanda
+docker compose up -d --wait postgres redis redpanda
 
-# 3. Run automated Vitest test suite (Unit, Concurrency, Isolation, Pipeline)
+# Unit tests, no services needed
 pnpm test
 
-# 4. Execute benchmark runner (Engine & End-to-End Gateway)
-npx tsx tests/load-test-runner.ts
+# Against real Postgres and Redis; refuses any database that is not local and *_test
+pnpm test:integration
 
-# 5. Start dev server
+# Real processes: gateway, Kafka, Python consumer, alert, webhook
+pnpm test:e2e
+
+# Create the schema, then start the gateway
+pnpm db:migrate
 pnpm dev
 ```

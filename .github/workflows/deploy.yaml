@@ -20,7 +20,7 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -41,11 +41,26 @@ jobs:
       - name: Type check
         run: pnpm exec tsc --noEmit
 
-      - name: Run tests
-        run: pnpm vitest run
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Start Postgres, Redis and Redpanda
+        run: docker compose up -d --wait postgres redis redpanda
+
+      - name: Integration tests
+        run: pnpm test:integration
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: End-to-end tests
+        run: |
+          pip install -r ai-service/requirements.txt
+          pnpm test:e2e
         env:
-          DATABASE_URL: "postgresql://user:password@localhost:5432/testdb"
-          NODE_ENV: "test"
+          PYTHON_BIN: python
 
       - name: Build backend
         run: pnpm run build

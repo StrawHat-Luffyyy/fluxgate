@@ -30,6 +30,14 @@ export default defineConfig({
       reporter: ["text-summary", "lcov"],
       include: ["src/**/*.ts"],
       exclude: ["src/server.ts", "src/db/migrate.ts", "src/monitoring/tracing.ts", "src/monitoring/sentry.ts"],
+      // server.ts and the Kafka client are exercised by tests/e2e, which is not measured here.
+      thresholds: {
+        lines: 80,
+        functions: 75,
+        branches: 65,
+        statements: 80,
+        "src/{proxy,middleware,lib,redis}/**": { lines: 85, branches: 70 },
+      },
     },
   },
 });
