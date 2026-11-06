@@ -35,7 +35,8 @@ import { assertLocalDatabase } from "./guard.js";
 const HISTORY_DAYS = 7;
 const BUCKET_MS = 5 * 60 * 1000;
 const BATCH_SIZE = 1000;
-const MAX_REQUESTS_PER_BUCKET = 18;
+// About the volume of the demo traffic, so that the history and live data share a scale.
+const MAX_REQUESTS_PER_BUCKET = 100;
 
 const upstreamUrl = process.env.DEMO_UPSTREAM_URL ?? "http://localhost:4000";
 

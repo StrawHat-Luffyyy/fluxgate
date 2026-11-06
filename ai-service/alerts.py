@@ -55,10 +55,10 @@ def _message(result: ScoreResult) -> str:
     top, value = result.top_feature, result.top_feature_value
     if result.detector == "range_guard":
         return (
-            f"{top} {value:g} exceeds the range guard limit {result.guard_limit:g} "
+            f"{top} {value:,.0f} exceeds the range guard limit {result.guard_limit:,.0f} "
             f"(a multiple of the largest value in the training data); the Isolation Forest did not flag it"
         )
-    return f"Isolation Forest flagged abnormal traffic, driven mainly by {top} (value {value:g})"
+    return f"Isolation Forest flagged abnormal traffic, driven mainly by {top} (value {value:,.0f})"
 
 
 def build_payload(event: TrafficEvent, result: ScoreResult, model_version: str, now: Optional[datetime] = None) -> dict:

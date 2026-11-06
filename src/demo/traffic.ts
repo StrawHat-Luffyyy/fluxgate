@@ -5,10 +5,10 @@ import { DEMO_API_KEY, DEMO_ROUTE_PREFIXES } from "./constants.js";
 // limit. Everything these requests produce is genuine pipeline output.
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? "http://localhost:3000";
-const REQUEST_INTERVAL_MS = 400;
-const OUTLIER_EVERY_MS = 60_000;
-const BURST_EVERY_MS = 150_000;
-const BURST_SIZE = 200;
+const REQUEST_INTERVAL_MS = 2_000;
+const OUTLIER_EVERY_MS = 300_000;
+const BURST_EVERY_MS = 600_000;
+const BURST_SIZE = 150;
 
 let stopping = false;
 process.on("SIGTERM", () => (stopping = true));
@@ -41,7 +41,7 @@ const ordinaryRequest = () => {
 };
 
 let nextOutlier = Date.now() + 15_000;
-let nextBurst = Date.now() + BURST_EVERY_MS;
+let nextBurst = Date.now() + 45_000;
 
 while (!stopping) {
   try {

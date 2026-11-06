@@ -13,6 +13,7 @@ COPY frontend ./frontend
 ARG NEXT_PUBLIC_API_URL=http://localhost:3000
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_OUTPUT_STANDALONE=true
 RUN pnpm --filter frontend build
 
 FROM node:22-alpine AS runner
@@ -27,7 +28,6 @@ ENV HOSTNAME=0.0.0.0
 
 COPY --from=builder --chown=fluxgate:fluxgate /app/frontend/.next/standalone ./
 COPY --from=builder --chown=fluxgate:fluxgate /app/frontend/.next/static ./frontend/.next/static
-COPY --from=builder --chown=fluxgate:fluxgate /app/frontend/public ./frontend/public
 
 USER fluxgate
 EXPOSE 3001
