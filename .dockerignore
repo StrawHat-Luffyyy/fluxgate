@@ -17,3 +17,4 @@
 frontend/e2e
 frontend/package-lock.json
 frontend/tsconfig.tsbuildinfo
+frontend/playwright.config.ts
