@@ -1,5 +1,4 @@
 import { NodeSDK } from "@opentelemetry/sdk-node";
-import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
@@ -11,48 +10,35 @@ import { createChildLogger } from "../lib/logger.js";
 
 const log = createChildLogger("tracing");
 
-// Resource attributes (Service identity)
-const resource = resourceFromAttributes({
-  [ATTR_SERVICE_NAME]: "fluxgate-core-api",
-  [ATTR_SERVICE_VERSION]: "1.0.0",
-  environment: env.NODE_ENV,
-});
+let sdk: NodeSDK | undefined;
 
-// Configure OTLP Trace Exporter
-const traceExporter = new OTLPTraceExporter({
-  url: env.OTLP_ENDPOINT,
-});
-
-// Initialize OpenTelemetry SDK
-export const otelSdk = new NodeSDK({
-  resource,
-  traceExporter,
-  instrumentations: [
-    getNodeAutoInstrumentations({
-      "@opentelemetry/instrumentation-fs": {
-        enabled: false,
-      },
-    }),
-  ],
-});
-
-// Start tracing
+/**
+ * Registers the SDK so that manual spans and W3C propagation work. Automatic
+ * library instrumentation is not used: it needs to load before the modules it
+ * patches, which an ESM app importing them at the top of server.ts cannot do.
+ */
 export const startTracing = async () => {
+  if (!env.OTEL_ENABLED) return;
   try {
-    await otelSdk.start();
-    log.info("OpenTelemetry Distributed Tracing initialized successfully");
+    sdk = new NodeSDK({
+      resource: resourceFromAttributes({
+        [ATTR_SERVICE_NAME]: "fluxgate-core-api",
+        [ATTR_SERVICE_VERSION]: "1.0.0",
+        environment: env.NODE_ENV,
+      }),
+      traceExporter: new OTLPTraceExporter({ url: env.OTLP_ENDPOINT }),
+    });
+    await sdk.start();
+    log.info("OpenTelemetry tracing started");
   } catch (err) {
     log.error({ err }, "Failed to initialize OpenTelemetry");
   }
 };
-// Graceful shutdown
-process.on("SIGTERM", async () => {
+
+export const stopTracing = async () => {
   try {
-    await otelSdk.shutdown();
-    log.info("OpenTelemetry SDK shut down successfully");
+    await sdk?.shutdown();
   } catch (err) {
     log.error({ err }, "Error shutting down OpenTelemetry SDK");
-  } finally {
-    process.exit(0);
   }
-});
+};

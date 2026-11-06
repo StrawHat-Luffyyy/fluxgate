@@ -31,12 +31,12 @@ export function useApiKeys() {
 
   const keysQuery = useQuery({
     queryKey: ["apiKeys"],
-    queryFn: () => apiFetch<KeysResponse>("/api/keys"),
+    queryFn: () => apiFetch<KeysResponse>("/keys"),
   });
 
   const generateMutation = useMutation({
     mutationFn: () =>
-      apiFetch<GenerateKeyResponse>("/api/keys", { method: "POST" }),
+      apiFetch<GenerateKeyResponse>("/keys", { method: "POST", body: JSON.stringify({}) }),
     onSuccess: (data) => {
       setNewKey(data.apiKey);
       queryClient.invalidateQueries({ queryKey: ["apiKeys"] });
