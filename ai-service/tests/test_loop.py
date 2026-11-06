@@ -4,6 +4,8 @@ import threading
 
 from confluent_kafka import KafkaError
 
+from confluent_kafka import KafkaException
+
 from consumer import Outcome, run_loop
 from health import HealthState
 from jsonlog import JsonFormatter
@@ -43,7 +45,11 @@ class FakeConsumer:
         assert asynchronous is False
         self.commits.append(message.offset())
 
+    seek_error = False
+
     def seek(self, tp):
+        if self.seek_error:
+            raise KafkaException(KafkaError(KafkaError._STATE))
         self.seeks.append(tp.offset)
 
 
@@ -78,3 +84,12 @@ def test_json_formatter_valid_with_quotes_and_extras():
     rec.requestId = "r-1"
     out = json.loads(JsonFormatter().format(rec))
     assert out["message"] == 'he said "hi" \\ ok' and out["requestId"] == "r-1" and out["level"] == "INFO"
+
+
+def test_failed_seek_exits_nonzero():
+    stop = threading.Event()
+    c = FakeConsumer([Msg(offset=5), Msg(offset=6)], stop)
+    c.seek_error = True
+    health = HealthState("v")
+    code = run_loop(c, FakeProcessor([Outcome.RETRY, Outcome.COMMIT]), health, stop, KafkaError)
+    assert code == 1 and c.commits == [] and health.snapshot()[0] == 503

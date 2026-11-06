@@ -2,12 +2,13 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { verifySignature } from "../lib/signature.js";
-import { dispatchEvent } from "../services/webhook.service.js";
+import { recordAnomaly } from "../services/anomaly.service.js";
 
 const alertSchema = z.object({
   tenantId: z.uuid(),
   alertType: z.string().min(1).max(64),
   requestId: z.string().min(1).max(128),
+  detector: z.enum(["forest", "range_guard"]),
   score: z.number(),
   modelVersion: z.string().min(1).max(128),
   topFeature: z.string().min(1).max(64),
@@ -43,9 +44,8 @@ internalRouter.post("/alerts", async (c) => {
     return c.json({ error: "Bad Request", message: "Invalid alert payload" }, 400);
   }
 
-  const alert = result.data;
-  const deliveries = await dispatchEvent(alert.tenantId, "anomaly.detected", alert);
-  return c.json({ success: true, deliveries: deliveries.length }, 202);
+  const outcome = await recordAnomaly(result.data);
+  return c.json({ success: true, ...outcome }, 202);
 });
 
 export default internalRouter;

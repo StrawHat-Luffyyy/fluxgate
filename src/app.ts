@@ -9,6 +9,7 @@ import { errorHandler } from "./middleware/errorHandler.js";
 import { metricsMiddleware, register } from "./monitoring/metrics.js";
 import adminRouter from "./routes/admin.js";
 import analyticsRouter from "./routes/analytics.js";
+import anomaliesRouter from "./routes/anomalies.js";
 import authRouter from "./routes/auth.js";
 import gatewayRouter from "./routes/gateway.js";
 import healthRouter from "./routes/health.js";
@@ -106,6 +107,7 @@ app.route("/team", teamRouter);
 app.route("/admin", adminRouter);
 app.route("/webhooks", webhooksRouter);
 app.route("/analytics", analyticsRouter);
+app.route("/anomalies", anomaliesRouter);
 app.route("/internal", internalRouter);
 app.route("/gateway", gatewayRouter);
 

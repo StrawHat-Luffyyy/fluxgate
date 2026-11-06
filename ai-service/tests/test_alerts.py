@@ -21,22 +21,29 @@ def test_signature_matches_independent_computation():
     assert sign(SECRET, t, body) == f"t={t},v1={expected}"
 
 
-def sample_payload():
+def sample_payload(detector="forest"):
     ev = TrafficEvent("r-1", "t-1", False, {"requestByteSize": 0.0, "responseByteSize": 5.0, "latencyMs": 30000.0})
-    res = ScoreResult(-0.1, True, {"requestByteSize": 0.0, "responseByteSize": 0.1, "latencyMs": -0.4}, "latencyMs", 30000.0)
+    res = ScoreResult(-0.1, True, {"requestByteSize": 0.0, "responseByteSize": 0.1, "latencyMs": -0.4}, "latencyMs",
+                      30000.0, detector=detector, guard_limit=14480.0)
     return build_payload(ev, res, "vtest")
 
 
 def test_payload_contract_fields():
     p = sample_payload()
     assert set(p) == {"tenantId", "alertType", "requestId", "score", "modelVersion", "topFeature", "topFeatureValue",
-                      "attribution", "features", "message", "detectedAt"}
+                      "attribution", "features", "message", "detectedAt", "detector"}
     assert p["alertType"] == "anomaly_detected" and p["detectedAt"].endswith("Z")
 
 
 class Resp:
-    def __init__(self, code):
+    def __init__(self, code, body=None):
         self.status_code = code
+        self._body = body
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no json")
+        return self._body
 
 
 class FakeSession:
@@ -49,7 +56,7 @@ class FakeSession:
         o = self.outcomes.pop(0)
         if isinstance(o, Exception):
             raise o
-        return Resp(o)
+        return Resp(*o) if isinstance(o, tuple) else Resp(o)
 
 
 def client(session, **kw):
@@ -112,3 +119,35 @@ def test_real_http_server_receives_verifiable_signature():
     assert seen["sig"] == sign(SECRET, t, seen["body"])
     assert json.loads(seen["body"])["requestId"] == "r-1"
     assert seen["body"] == serialize(json.loads(seen["body"]))
+
+
+def test_range_guard_payload_is_honest():
+    p = sample_payload("range_guard")
+    assert p["detector"] == "range_guard"
+    assert "Isolation Forest flagged" not in p["message"] and "range guard" in p["message"]
+    assert "Isolation Forest flagged" in sample_payload("forest")["message"]
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 500])
+def test_auth_and_routing_failures_are_transient(status):
+    s = FakeSession(*([status] * 3))
+    with pytest.raises(TransientAlertError):
+        client(s, max_attempts=3).send(sample_payload(), "r-1")
+    assert len(s.calls) == 3
+
+
+def test_404_tenant_not_found_is_permanent():
+    s = FakeSession((404, {"error": "TENANT_NOT_FOUND"}))
+    with pytest.raises(PermanentAlertError):
+        client(s).send(sample_payload(), "r-1")
+    assert len(s.calls) == 1
+
+
+def test_404_other_json_is_transient():
+    with pytest.raises(TransientAlertError):
+        client(FakeSession(*([(404, {"error": "NOPE"})] * 2)), max_attempts=2).send(sample_payload(), "r-1")
+
+
+def test_422_is_permanent():
+    with pytest.raises(PermanentAlertError):
+        client(FakeSession(422)).send(sample_payload(), "r-1")

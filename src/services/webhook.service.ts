@@ -84,25 +84,33 @@ export const listDeliveries = (tenantId: string, limit = 50) =>
     .orderBy(desc(webhookDeliveries.createdAt))
     .limit(limit);
 
-/** Creates one delivery row per enabled endpoint, then tries to enqueue each. */
-export async function dispatchEvent(
+type DbOrTx = Pick<typeof db, "select" | "insert">;
+
+/**
+ * Creates one delivery row per enabled endpoint. Takes a transaction so the rows
+ * commit together with the event that caused them (a transactional outbox).
+ */
+export async function createDeliveries(
+  tx: DbOrTx,
   tenantId: string,
   eventType: string,
   payload: Record<string, unknown>,
 ) {
-  const endpoints = await db
+  const endpoints = await tx
     .select({ id: webhookEndpoints.id })
     .from(webhookEndpoints)
     .where(and(eq(webhookEndpoints.tenantId, tenantId), isNotNull(webhookEndpoints.enabledAt)));
   if (endpoints.length === 0) return [];
 
-  const deliveries = await db
+  return tx
     .insert(webhookDeliveries)
     .values(endpoints.map(({ id }) => ({ tenantId, endpointId: id, eventType, payload })))
     .returning({ id: webhookDeliveries.id });
-  await Promise.all(deliveries.map(({ id }) => enqueueDelivery(id)));
-  return deliveries;
 }
+
+/** Call after commit. Failures are left for the sweeper. */
+export const enqueueDeliveries = (deliveries: { id: string }[]) =>
+  Promise.all(deliveries.map(({ id }) => enqueueDelivery(id)));
 
 export async function sendTestEvent(tenantId: string, endpointId: string) {
   const [endpoint] = await db

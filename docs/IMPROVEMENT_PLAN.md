@@ -45,12 +45,12 @@ Status key: `[x]` done and verified, `[~]` done with a stated limitation, `[ ]` 
 
 ## Phase 2: real features
 
-- [ ] Per-tenant rate-limit config (Postgres, Redis cache, admin API)
-- [ ] Real analytics from `request_logs` (batched writes, retention job)
-- [ ] Persisted anomalies with score and SHAP attribution
-- [ ] AI service: env config, reconnects, JSON logs, `/health`, versioned models, documented data
-- [ ] `/health/live`, `/health/ready`
-- [ ] Graceful shutdown
+- [x] Per-tenant rate-limit config (Postgres, Redis cache, admin API)
+- [x] Real analytics from `request_logs` (batched writes, retention job)
+- [x] Persisted anomalies with score and SHAP attribution
+- [x] AI service: env config, reconnects, JSON logs, `/health`, versioned models, documented data
+- [x] `/health/live`, `/health/ready`
+- [x] Graceful shutdown
 
 ## Phase 3: tests
 

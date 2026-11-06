@@ -75,6 +75,8 @@ def test_settings_require_secret_and_defaults():
         Settings.from_env({"INTERNAL_ALERT_SECRET": "  "})
     s = Settings.from_env({"INTERNAL_ALERT_SECRET": "x"})
     assert s.kafka_dlq_topic == "gateway.traffic.dlq" and s.health_port == 8090 and s.model_version is None
+    assert s.range_guard_multiplier == 10
+    assert Settings.from_env({"INTERNAL_ALERT_SECRET": "x", "RANGE_GUARD_MULTIPLIER": "0"}).range_guard_multiplier == 0
 
 
 def test_trace_context_extraction():

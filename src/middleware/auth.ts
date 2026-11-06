@@ -12,6 +12,7 @@ export type Env = {
     apiKeyId: string;
     rateLimited?: boolean;
     upstreamCalled?: boolean;
+    requestBytes?: number;
     traceCarrier?: Record<string, string>;
     requestId: string;
   };

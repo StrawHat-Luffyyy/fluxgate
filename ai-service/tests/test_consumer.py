@@ -31,7 +31,7 @@ class FakeProducer:
             on_delivery("boom" if self.fail else None, None)
 
     def flush(self, timeout=None):
-        return 0
+        return getattr(self, "remaining", 0)
 
 
 class FakeAlerts:
@@ -116,3 +116,17 @@ def test_unexpected_exception_does_not_crash(scorer):
     p.scorer = Boom()
     assert p.handle(FakeMsg(enc())) is Outcome.COMMIT
     assert len(prod.records) == 1
+
+
+def test_upstream_not_called_skipped_and_committed(scorer):
+    p, h, prod = make(scorer)
+    assert p.handle(FakeMsg(enc(upstreamCalled=False, latencyMs=99999999))) is Outcome.COMMIT
+    assert p.alerts.sent == [] and prod.records == []
+
+
+def test_dlq_flush_timeout_does_not_commit(scorer):
+    producer = FakeProducer()
+    producer.remaining = 1  # flush timed out with a record still queued
+    p, h, _ = make(scorer, producer=producer)
+    assert p.handle(FakeMsg(b"garbage")) is Outcome.RETRY
+    assert h.dlq == 0

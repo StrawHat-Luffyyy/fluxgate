@@ -2,49 +2,9 @@ import { createMiddleware } from "hono/factory";
 import type { Env } from "../middleware/auth.js";
 import { clientIpOf } from "../lib/clientIp.js";
 import { emitTelemetry } from "../telemetry/pipeline.js";
+import { countingStream } from "./countingStream.js";
 import { parseContentLength, type RequestFeatures } from "./extractor.js";
-import { routePrefixOf } from "./path.js";
-
-/**
- * Passes the body through unchanged while counting bytes. `onDone` runs once,
- * whether the stream finished, failed, or the client went away.
- */
-const countingStream = (
-  body: ReadableStream<Uint8Array>,
-  onDone: (bytes: number) => void,
-): ReadableStream<Uint8Array> => {
-  const reader = body.getReader();
-  let bytes = 0;
-  let finished = false;
-  const finish = () => {
-    if (!finished) {
-      finished = true;
-      onDone(bytes);
-    }
-  };
-
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          finish();
-          controller.close();
-          return;
-        }
-        bytes += value.byteLength;
-        controller.enqueue(value);
-      } catch (err) {
-        finish();
-        controller.error(err);
-      }
-    },
-    async cancel(reason) {
-      finish();
-      await reader.cancel(reason);
-    },
-  });
-};
+import { storableRoutePrefix } from "./path.js";
 
 /**
  * Records every authenticated gateway request, including 429s and upstream
@@ -56,15 +16,14 @@ export const telemetryMiddleware = createMiddleware<Env>(async (c, next) => {
   await next();
   const latencyMs = Date.now() - startedAt;
 
-  const base: Omit<RequestFeatures, "responseByteSize"> = {
+  const base: Omit<RequestFeatures, "responseByteSize" | "requestByteSize"> = {
     requestId: c.get("requestId"),
     tenantId: c.get("tenantId"),
     apiKeyId: c.get("apiKeyId"),
     method: c.req.method,
     path: c.req.path,
-    routePrefix: routePrefixOf(c.req.path),
+    routePrefix: storableRoutePrefix(c.req.path),
     clientIp: clientIpOf(c),
-    requestByteSize: parseContentLength(c.req.header("content-length")),
     statusCode: c.res.status,
     rateLimited: c.get("rateLimited") === true,
     upstreamCalled: c.get("upstreamCalled") === true,
@@ -73,7 +32,16 @@ export const telemetryMiddleware = createMiddleware<Env>(async (c, next) => {
   };
   const traceCarrier = c.get("traceCarrier");
   const emit = (responseByteSize: number) =>
-    emitTelemetry({ ...base, responseByteSize }, traceCarrier);
+    emitTelemetry(
+      {
+        ...base,
+        // Counted when the body was forwarded, so a chunked upload is not recorded
+        // as zero. The header only applies when the gateway answered without reading.
+        requestByteSize: c.get("requestBytes") ?? parseContentLength(c.req.header("content-length")),
+        responseByteSize,
+      },
+      traceCarrier,
+    );
 
   const { body, status, headers } = c.res;
   // Hono runs HEAD as GET and discards the body, so a wrapped stream would never

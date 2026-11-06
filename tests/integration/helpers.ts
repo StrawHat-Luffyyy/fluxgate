@@ -10,7 +10,7 @@ export const PASSWORD = "correct-horse-battery";
 /** Empties all tables and the Redis test db, so each test starts from nothing. */
 export const resetState = async () => {
   await waitForRedis();
-  await db.execute(sql`truncate table tenants cascade`);
+  await db.execute(sql`truncate table tenants, request_logs cascade`);
   await redis.flushdb();
 };
 

@@ -22,6 +22,9 @@ export interface RequestFeatures {
 }
 
 export const parseContentLength = (value: string | undefined | null): number => {
+  // The header is client-controlled: an absurd value must not reach the database,
+  // where an out-of-range bigint would fail the insert.
   const parsed = Number.parseInt(value ?? "", 10);
-  return Number.isNaN(parsed) || parsed < 0 ? 0 : parsed;
+  if (Number.isNaN(parsed) || parsed < 0) return 0;
+  return Math.min(parsed, Number.MAX_SAFE_INTEGER);
 };

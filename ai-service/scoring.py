@@ -23,7 +23,13 @@ class TrafficEvent:
     request_id: str
     tenant_id: str
     rate_limited: bool
-    features: Optional[dict[str, float]]  # None when rate_limited (not scored)
+    features: Optional[dict[str, float]]  # None when not scored
+    upstream_called: bool = True
+
+    @property
+    def skip(self) -> bool:
+        """Rate-limited or gateway-answered requests never reached an upstream: not scored."""
+        return self.rate_limited or not self.upstream_called
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,8 @@ class ScoreResult:
     attribution: Optional[dict[str, float]] = None
     top_feature: Optional[str] = None
     top_feature_value: Optional[float] = None
+    detector: Optional[str] = None  # "forest" or "range_guard"
+    guard_limit: Optional[float] = None  # raw-unit limit that was exceeded (range_guard only)
 
 
 def _required_str(payload: dict, key: str) -> str:
@@ -61,10 +69,13 @@ def parse_event(payload: Any) -> TrafficEvent:
     rate_limited = payload.get("rateLimited", False)
     if not isinstance(rate_limited, bool):
         raise InvalidMessage("field 'rateLimited' must be a boolean")
-    if rate_limited:
-        return TrafficEvent(request_id, tenant_id, True, None)
+    upstream_called = payload.get("upstreamCalled", True)  # old messages lack it: assume true
+    if not isinstance(upstream_called, bool):
+        raise InvalidMessage("field 'upstreamCalled' must be a boolean")
+    if rate_limited or not upstream_called:
+        return TrafficEvent(request_id, tenant_id, rate_limited, None, upstream_called)
     features = {name: _feature_number(payload, name) for name in FEATURE_NAMES}
-    return TrafficEvent(request_id, tenant_id, False, features)
+    return TrafficEvent(request_id, tenant_id, False, features, True)
 
 
 def to_model_space(rows: np.ndarray) -> np.ndarray:
@@ -74,8 +85,8 @@ def to_model_space(rows: np.ndarray) -> np.ndarray:
 
 # Isolation Forest scores saturate for points beyond the training range (they land in the same
 # outermost leaves as the training extremes), so a 30 s latency can score no worse than a 600 ms
-# one. This guard flags any feature above GUARD_FACTOR x the training maximum.
-GUARD_FACTOR = 10.0
+# one. This guard flags any feature above multiplier x the training maximum (0 disables it).
+DEFAULT_GUARD_MULTIPLIER = 10.0
 
 
 class Scorer:
@@ -85,7 +96,9 @@ class Scorer:
         baseline_raw: np.ndarray,
         version: str,
         feature_max: Optional[dict[str, float]] = None,
+        guard_multiplier: float = DEFAULT_GUARD_MULTIPLIER,
     ):
+        self.guard_multiplier = guard_multiplier
         self.model = model
         self.version = version
         self.feature_max = feature_max or {}
@@ -109,7 +122,9 @@ class Scorer:
         exceeded = {
             n: features[n] / self.feature_max[n]
             for n in FEATURE_NAMES
-            if self.feature_max.get(n, 0) > 0 and features[n] > GUARD_FACTOR * self.feature_max[n]
+            if self.guard_multiplier > 0
+            and self.feature_max.get(n, 0) > 0
+            and features[n] > self.guard_multiplier * self.feature_max[n]
         }
         if not forest_flag and not exceeded:
             return ScoreResult(score=score, is_anomaly=False)
@@ -117,13 +132,14 @@ class Scorer:
         attribution, top = self.explain(x)
         if not forest_flag:
             top = max(exceeded, key=exceeded.get)
-        is_anomaly = True
         return ScoreResult(
             score=score,
             is_anomaly=True,
             attribution=attribution,
             top_feature=top,
             top_feature_value=float(features[top]),  # raw units, not log space
+            detector="forest" if forest_flag else "range_guard",
+            guard_limit=None if forest_flag else self.guard_multiplier * self.feature_max[top],
         )
 
     def explain(self, x_model_space: np.ndarray) -> tuple[dict[str, float], str]:

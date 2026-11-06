@@ -9,6 +9,10 @@ import {
   getGatewayRoutes,
   updateGatewayRoute,
 } from "../services/admin.service.js";
+import {
+  getRateLimitConfig,
+  saveRateLimitConfig,
+} from "../services/rateLimitConfig.service.js";
 
 // The proxy matches on the first path segment, so a multi-segment prefix could
 // be saved but would never match any request.
@@ -20,8 +24,25 @@ const pathPrefix = z
 
 const targetUrl = z.url().max(2048);
 
+// refillRate has a floor: the Lua scripts divide by it and pass the result to EXPIRE.
+const rateLimitSchema = z.object({
+  strategy: z.enum(["token_bucket", "leaky_bucket", "sliding_window"]),
+  capacity: z.number().int().min(1).max(1_000_000),
+  refillRate: z.number().min(0.001).max(1_000_000),
+  windowMs: z.number().int().min(1_000).max(86_400_000),
+});
+
 const adminRouter = new Hono<DashboardEnv>();
 adminRouter.use("*", dashBoardAuth);
+
+adminRouter.get("/rate-limit", requiredRole("viewer"), async (c) => {
+  return c.json({ config: await getRateLimitConfig(c.get("tenantId")) });
+});
+
+adminRouter.put("/rate-limit", requiredRole("admin"), async (c) => {
+  const config = await parseBody(c, rateLimitSchema);
+  return c.json({ config: await saveRateLimitConfig(c.get("tenantId"), config) });
+});
 
 adminRouter.post("/routes", requiredRole("admin"), async (c) => {
   const input = await parseBody(c, z.object({ pathPrefix, targetUrl }));

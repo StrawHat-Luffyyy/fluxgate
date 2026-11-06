@@ -65,9 +65,34 @@ def test_top_feature_for_huge_response(scorer):
     assert r.top_feature_value == 500_000_000
 
 
+@pytest.mark.parametrize("row", [(0, 0, 15), (0, 0, 150), (0, 0, 20), (0, 150, 25)])
+def test_fast_empty_and_small_error_responses_not_flagged(scorer, row):
+    # regression: 204 @15ms, 204 @150ms, 304 @20ms were false positives
+    assert not scorer.score(dict(zip(FEATURE_NAMES, map(float, row)))).is_anomaly
+
+
+def test_range_guard_detector_and_multiplier(trained):
+    from scoring import Scorer
+    model, baseline, fmax = trained
+    row = {"requestByteSize": 0, "responseByteSize": 3000, "latencyMs": 30_000}
+    r = Scorer(model, baseline, "v", fmax).score(row)
+    assert r.is_anomaly and r.detector == "range_guard" and r.guard_limit == 10 * fmax["latencyMs"]
+    assert not Scorer(model, baseline, "v", fmax, guard_multiplier=0).score(row).is_anomaly
+    assert not Scorer(model, baseline, "v", fmax, guard_multiplier=1000).score(row).is_anomaly
+
+
+def test_upstream_called_flag():
+    base = {"requestId": "r", "tenantId": "t", "latencyMs": 1}
+    assert parse_event({**base, "upstreamCalled": False}).skip
+    assert not parse_event(good_message()).skip  # missing field defaults to true
+    assert not parse_event(good_message(upstreamCalled=True)).skip
+    with pytest.raises(InvalidMessage):
+        parse_event(good_message(upstreamCalled="no"))
+
+
 def test_forest_flagged_top_feature_is_max_abs_shap(scorer):
-    r = scorer.score({"requestByteSize": 0, "responseByteSize": 0, "latencyMs": 1})
-    assert r.is_anomaly  # flagged by the forest itself, not the range guard
+    r = scorer.score({"requestByteSize": 0, "responseByteSize": 0, "latencyMs": 2000})
+    assert r.is_anomaly and r.detector == "forest"
     assert r.top_feature == max(r.attribution, key=lambda k: abs(r.attribution[k]))
 
 

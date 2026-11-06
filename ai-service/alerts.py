@@ -18,7 +18,19 @@ from tracing import TraceContext
 
 logger = logging.getLogger("fluxgate.alerts")
 
-TRANSIENT_4XX = {408, 429}
+PERMANENT_STATUS = {400, 422}
+
+
+def _is_permanent(resp) -> bool:
+    if resp.status_code in PERMANENT_STATUS:
+        return True
+    if resp.status_code == 404:  # a deleted tenant is the one permanent 404
+        try:
+            body = resp.json()
+        except Exception:
+            return False
+        return isinstance(body, dict) and body.get("error") == "TENANT_NOT_FOUND"
+    return False
 
 
 class AlertError(Exception):
@@ -39,6 +51,16 @@ def sign(secret: str, timestamp: int, body: bytes) -> str:
     return f"t={timestamp},v1={mac.hexdigest()}"
 
 
+def _message(result: ScoreResult) -> str:
+    top, value = result.top_feature, result.top_feature_value
+    if result.detector == "range_guard":
+        return (
+            f"{top} {value:g} exceeds the range guard limit {result.guard_limit:g} "
+            f"(a multiple of the largest value in the training data); the Isolation Forest did not flag it"
+        )
+    return f"Isolation Forest flagged abnormal traffic, driven mainly by {top} (value {value:g})"
+
+
 def build_payload(event: TrafficEvent, result: ScoreResult, model_version: str, now: Optional[datetime] = None) -> dict:
     assert event.features is not None and result.attribution is not None and result.top_feature
     now = now or datetime.now(timezone.utc)
@@ -52,10 +74,8 @@ def build_payload(event: TrafficEvent, result: ScoreResult, model_version: str, 
         "topFeatureValue": result.top_feature_value,
         "attribution": {n: result.attribution[n] for n in FEATURE_NAMES},
         "features": {n: event.features[n] for n in FEATURE_NAMES},
-        "message": (
-            f"Isolation Forest flagged abnormal traffic, driven mainly by "
-            f"{result.top_feature} (value {result.top_feature_value:g})"
-        ),
+        "detector": result.detector,
+        "message": _message(result),
         "detectedAt": now.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
     }
 
@@ -116,10 +136,11 @@ class AlertClient:
                 status = resp.status_code
                 if 200 <= status < 300:
                     return
-                if status in TRANSIENT_4XX or status >= 500:
-                    last_error = f"HTTP {status}"
-                else:
+                if _is_permanent(resp):
                     raise PermanentAlertError(f"gateway rejected alert with HTTP {status}")
+                # Everything else (5xx, 408, 429, and 401/403/404 which mean a rotated secret, clock
+                # skew or a wrong endpoint) is operational: retry, never DLQ, surface via health.
+                last_error = f"HTTP {status}"
 
             if attempt < self.max_attempts - 1:
                 delay = self._backoff(attempt)

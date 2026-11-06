@@ -20,7 +20,10 @@ OUTLIERS = {
     "GET, 500 MB response": (0, 500_000_000, 80),
     "POST, 200 MB request body": (200_000_000, 400, 120),
     "GET with 5 KB request body (never seen in training)": (5000, 3000, 60),
-    "GET, 1 ms latency, 0 byte response": (0, 0, 1),
+    "204, 0 B response, 15 ms (must be normal)": (0, 0, 15),
+    "204, 0 B response, 150 ms (must be normal)": (0, 0, 150),
+    "304, 0 B response, 20 ms (must be normal)": (0, 0, 20),
+    "404 error body 150 B, 25 ms (must be normal)": (0, 150, 25),
     "typical GET (control, should be normal)": (0, 3000, 60),
     "typical POST (control, should be normal)": (800, 400, 120),
 }
@@ -36,6 +39,8 @@ def main() -> None:
 
     loaded = load_model(a.model_dir, a.version)
     scorer = Scorer(loaded.model, loaded.baseline, loaded.version, loaded.metadata.get("featureMax"))
+    print(f"range guard limits (raw units, {scorer.guard_multiplier:g}x training max): "
+          + ", ".join(f"{n}={scorer.guard_multiplier * v:,.0f}" for n, v in scorer.feature_max.items()))
     print(f"model {loaded.version} (contamination={loaded.metadata['hyperparameters']['contamination']})")
 
     X = generate_traffic(a.rows, a.seed)
@@ -53,7 +58,7 @@ def main() -> None:
     for name, (req, res, lat) in OUTLIERS.items():
         r = scorer.score(dict(zip(FEATURE_NAMES, map(float, (req, res, lat)))))
         top = f", top feature {r.top_feature}" if r.is_anomaly else ""
-        print(f"{'FLAGGED' if r.is_anomaly else 'normal ':8s} score={r.score:+.3f}  {name}{top}")
+        print(f"{'FLAGGED' if r.is_anomaly else 'normal ':8s} score={r.score:+.3f}  {name}{top}{' via ' + r.detector if r.is_anomaly else ''}")
 
 
 if __name__ == "__main__":
