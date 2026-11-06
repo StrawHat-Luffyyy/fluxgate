@@ -1,232 +1,266 @@
+"""FluxGate AI anomaly consumer (entry point: `python consumer.py`).
+
+Consumes gateway traffic telemetry from Kafka, scores it with an Isolation Forest, explains
+anomalies with SHAP and POSTs signed alerts to the gateway.
+
+Delivery semantics: at-least-once. Auto-commit is off and the offset is committed synchronously
+after each message is fully handled:
+  * scored/skipped/alerted         -> commit
+  * malformed or permanently rejected -> copy to the DLQ topic, then commit
+  * alert delivery retries exhausted or DLQ write failed -> do NOT commit, seek back so the same
+    message is reprocessed (the gateway deduplicates on tenantId+requestId).
 """
-FluxGate AI Anomaly Detection Consumer
 
-Consumes traffic logs from Kafka, runs Isolation Forest inference,
-explains anomalies with SHAP, and fires alerts to the gateway.
+from __future__ import annotations
 
-OpenTelemetry trace context is extracted from Kafka headers and propagated
-into child spans — preserving distributed tracing from Node.js → Python.
-"""
-
-import sys
 import json
-import time
 import logging
-import pickle
-from typing import Optional
+import signal
+import sys
+import threading
+import time
+from enum import Enum
+from typing import Any, Optional
 
-import numpy as np
-import numpy.typing as npt
-import shap
-import requests
+from alerts import AlertClient, PermanentAlertError, TransientAlertError, build_payload
+from health import HealthState, start_health_server
+from jsonlog import configure_logging
+from model_store import ModelStoreError, load_model
+from scoring import InvalidMessage, Scorer, parse_event
+from settings import Settings, SettingsError
+from tracing import extract_trace_context
 
-from sklearn.ensemble import IsolationForest
+logger = logging.getLogger("fluxgate.consumer")
 
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-
-from confluent_kafka import Consumer, KafkaError  
-from opentelemetry import propagate, trace  
-from opentelemetry.sdk.trace import TracerProvider  
-from opentelemetry.sdk.trace.export import (  
-    SimpleSpanProcessor,
-    ConsoleSpanExporter,
-)
-
-# --- Structured Logging ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='{"timestamp":"%(asctime)s","level":"%(levelname)s","module":"%(name)s","message":"%(message)s"}',
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-logger = logging.getLogger("fluxgate-ai-consumer")
-
-# --- OpenTelemetry Tracer ---
-provider = TracerProvider()
-processor = SimpleSpanProcessor(ConsoleSpanExporter())
-provider.add_span_processor(processor)
-trace.set_tracer_provider(provider)
-tracer = trace.get_tracer("fluxgate-ai-consumer")
-
-# --- Constants ---
-KAFKA_BROKER = "localhost:19092"
-KAFKA_TOPIC = "gateway.traffic.logs"
-KAFKA_GROUP = "fluxgate-ai-workers"
-ALERT_ENDPOINT = "http://localhost:3000/internal/alerts"
-MAX_CONNECT_RETRIES = 10
-FEATURE_NAMES: list[str] = ["requestByteSize", "responseByteSize", "latencyMs"]
+RETRY_PAUSE_SECONDS = 5.0
 
 
-def load_model_and_baseline() -> tuple[IsolationForest, npt.NDArray[np.float64]]:
-    """Loads the trained Isolation Forest model and SHAP baseline data from disk."""
-    with open("model.pkl", "rb") as f:
-        model: IsolationForest = pickle.load(f)
-    try:
-        with open("baseline_data.pkl", "rb") as f:
-            X_train: npt.NDArray[np.float64] = pickle.load(f)
-    except FileNotFoundError:
-        logger.warning("baseline_data.pkl not found, using random fallback for SHAP")
-        X_train = np.random.normal(100, 10, (100, 3))
-    return model, X_train
+class Outcome(Enum):
+    COMMIT = "commit"
+    RETRY = "retry"  # do not commit; seek back and reprocess
 
 
-def create_consumer_with_backoff() -> Consumer:
-    """Creates a Kafka consumer with exponential backoff on connection failures."""
-    conf = {
-        "bootstrap.servers": KAFKA_BROKER,
-        "group.id": KAFKA_GROUP,
-        "auto.offset.reset": "earliest",
-    }
+class DeadLetterQueue:
+    """Copies the original bytes plus error headers to a real Kafka DLQ topic."""
 
-    for attempt in range(MAX_CONNECT_RETRIES):
+    def __init__(self, producer: Any, topic: str, flush_timeout: float = 10.0):
+        self.producer = producer
+        self.topic = topic
+        self.flush_timeout = flush_timeout
+
+    def send(self, msg: Any, reason: str) -> bool:
+        """True only when the broker acknowledged the DLQ record."""
+        errors: list = []
+
+        def on_delivery(err, _m):
+            if err is not None:
+                errors.append(err)
+
+        headers = [(k, v) for k, v in (msg.headers() or []) if isinstance(k, str) and isinstance(v, (bytes, str))]
+        headers += [
+            ("x-dlq-error", reason[:500].encode("utf-8", "replace")),
+            ("x-dlq-source", f"{msg.topic()}[{msg.partition()}]@{msg.offset()}".encode()),
+        ]
         try:
-            consumer = Consumer(conf)
-            consumer.subscribe([KAFKA_TOPIC])
-            logger.info("Kafka Consumer connected and subscribed to %s", KAFKA_TOPIC)
-            return consumer
-        except Exception as e:
-            wait_seconds = min(2 ** attempt, 60)
-            logger.warning(
-                "Kafka connection failed (attempt %d/%d): %s. Retrying in %ds...",
-                attempt + 1,
-                MAX_CONNECT_RETRIES,
-                str(e),
-                wait_seconds,
+            self.producer.produce(
+                self.topic, value=msg.value(), key=msg.key(), headers=headers, on_delivery=on_delivery
             )
-            time.sleep(wait_seconds)
+            remaining = self.producer.flush(self.flush_timeout)
+        except Exception:
+            logger.exception("DLQ produce failed")
+            return False
+        return remaining == 0 and not errors
 
-    logger.critical("Failed to connect to Kafka after %d attempts. Exiting.", MAX_CONNECT_RETRIES)
-    sys.exit(1)
 
+class Processor:
+    """Decides what to do with one Kafka message. Kafka-free apart from the msg accessors."""
 
-def send_alert(tenant_id: Optional[str], message: str, data: dict) -> None:
-    """Sends an anomaly alert to the gateway internal endpoint."""
-    try:
-        requests.post(
-            ALERT_ENDPOINT,
-            json={
-                "tenantId": tenant_id,
-                "alertType": "anomaly_detected",
-                "message": message,
-                "data": data,
-            },
-            timeout=5,
+    def __init__(self, scorer: Scorer, alerts: AlertClient, dlq: DeadLetterQueue, health: HealthState):
+        self.scorer = scorer
+        self.alerts = alerts
+        self.dlq = dlq
+        self.health = health
+
+    def _dead_letter(self, msg: Any, reason: str, log_extra: dict) -> Outcome:
+        if self.dlq.send(msg, reason):
+            self.health.incr(dlq=1)
+            logger.error("message sent to DLQ: %s", reason, extra=log_extra)
+            return Outcome.COMMIT
+        logger.error("DLQ write failed, message will be reprocessed", extra=log_extra)
+        return Outcome.RETRY
+
+    def handle(self, msg: Any) -> Outcome:
+        trace = extract_trace_context(msg.headers())
+        extra: dict = {"traceId": trace.trace_id, "offset": msg.offset(), "partition": msg.partition()}
+        self.health.message_seen()
+        try:
+            return self._handle(msg, trace, extra)
+        except Exception as exc:  # never crash on a bad message
+            logger.exception("unexpected error handling message", extra=extra)
+            return self._dead_letter(msg, f"unexpected error: {type(exc).__name__}: {exc}", extra)
+
+    def _handle(self, msg: Any, trace, extra: dict) -> Outcome:
+        raw = msg.value()
+        try:
+            if raw is None:
+                raise InvalidMessage("empty message value")
+            event = parse_event(json.loads(raw.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError, InvalidMessage) as exc:
+            return self._dead_letter(msg, f"invalid message: {exc}", extra)
+
+        extra.update(requestId=event.request_id, tenantId=event.tenant_id)
+
+        if event.skip:
+            logger.debug("request not scored (rate-limited or gateway-answered)", extra=extra)
+            self.health.incr(processed=1)
+            return Outcome.COMMIT
+
+        assert event.features is not None
+        result = self.scorer.score(event.features)
+        if not result.is_anomaly:
+            logger.info("traffic normal", extra={**extra, "score": round(result.score, 4)})
+            self.health.incr(processed=1)
+            return Outcome.COMMIT
+
+        logger.warning(
+            "anomaly detected",
+            extra={**extra, "score": round(result.score, 4), "topFeature": result.top_feature,
+                   "topFeatureValue": result.top_feature_value, "attribution": result.attribution},
         )
-    except requests.RequestException as e:
-        logger.error("Failed to send alert for tenant %s: %s", tenant_id, str(e))
+        payload = build_payload(event, result, self.scorer.version)
+        try:
+            self.alerts.send(payload, event.request_id, trace)
+        except PermanentAlertError as exc:
+            self.health.incr(alert_failures=1)
+            return self._dead_letter(msg, f"alert rejected: {exc}", extra)
+        except TransientAlertError as exc:
+            self.health.incr(alert_failures=1)
+            self.health.update(alerts_failing=True)
+            logger.error("alert delivery exhausted, will reprocess: %s", exc, extra=extra)
+            return Outcome.RETRY
+
+        self.health.update(alerts_failing=False)
+        self.health.incr(processed=1, anomalies=1)
+        return Outcome.COMMIT
 
 
-def start_consumer() -> None:
-    """Main consumer loop: load model, poll Kafka, run inference, fire alerts."""
-    model, X_train = load_model_and_baseline()
+def run_loop(consumer: Any, processor: Processor, health: HealthState, stop: threading.Event, kafka_error_cls: Any) -> int:
+    """Poll/process/commit loop. Returns a process exit code."""
+    from confluent_kafka import KafkaException, TopicPartition  # local: keeps module importable w/o Kafka in tests
 
-    logger.info("Initializing SHAP Explainer...")
-    explainer = shap.TreeExplainer(model, data=X_train)
-    logger.info("AI Model and SHAP Explainer loaded. Starting Kafka Consumer...")
+    last_error_at = float("-inf")
+    health.update(started=True)
+    while not stop.is_set():
+        msg = consumer.poll(1.0)
+        if msg is None:
+            # A timeout without an error event means the client is not reporting trouble.
+            if time.monotonic() - last_error_at > 30:
+                health.update(kafka_connected=True)
+            continue
 
-    consumer = create_consumer_with_backoff()
+        err = msg.error()
+        if err:
+            if err.code() == kafka_error_cls._PARTITION_EOF:
+                continue
+            if err.fatal():
+                logger.critical("fatal Kafka error: %s", err)
+                health.update(fatal=True, kafka_connected=False)
+                return 1
+            # Retriable (e.g. brokers down): librdkafka reconnects on its own.
+            logger.error("Kafka error (will keep polling): %s", err)
+            last_error_at = time.monotonic()
+            health.update(kafka_connected=False)
+            continue
+
+        health.update(kafka_connected=True)
+        outcome = processor.handle(msg)
+
+        if outcome is Outcome.COMMIT:
+            try:
+                consumer.commit(message=msg, asynchronous=False)
+            except KafkaException as exc:
+                logger.error("offset commit failed: %s", exc)
+                if exc.args and hasattr(exc.args[0], "fatal") and exc.args[0].fatal():
+                    health.update(fatal=True)
+                    return 1
+        else:
+            try:
+                consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+            except KafkaException as exc:
+                # Cannot guarantee the message is reprocessed in this process: exit and let the
+                # restart resume from the committed offset.
+                logger.critical("seek failed, exiting to resume from committed offset: %s", exc)
+                health.update(fatal=True)
+                return 1
+            stop.wait(RETRY_PAUSE_SECONDS)
+    return 0
+
+
+def install_signal_handlers(stop: threading.Event) -> None:
+    def handler(signum, _frame):
+        logger.info("shutdown signal received", extra={"signal": signum})
+        stop.set()
+
+    # SIGTERM exists on Windows but is only delivered via os.kill; SIGBREAK is Ctrl+Break there.
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):  # not main thread / unsupported on this platform
+            logger.debug("could not install handler for %s", name)
+
+
+def main() -> int:
+    try:
+        settings = Settings.from_env()
+    except SettingsError as exc:
+        print(f"configuration error: {exc}", file=sys.stderr)
+        return 2
+    configure_logging(settings.log_level)
 
     try:
-        while True:
-            msg = consumer.poll(1.0)
+        loaded = load_model(settings.model_dir, settings.model_version)
+    except ModelStoreError as exc:
+        logger.critical("cannot load model: %s", exc)
+        return 2
 
-            if msg is None:
-                continue
+    from confluent_kafka import Consumer, KafkaError, Producer
 
-            if msg.error():
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    continue
-                else:
-                    logger.error("Kafka Error: %s", msg.error())
-                    break
+    scorer = Scorer(loaded.model, loaded.baseline, loaded.version, loaded.metadata.get("featureMax"),
+                    settings.range_guard_multiplier)
+    health = HealthState(model_version=loaded.version)
+    start_health_server(health, settings.health_port)
 
-            # Deserialize tracing context from headers
-            headers_dict: dict[str, str] = {}
-            kafka_headers = msg.headers()
-            if kafka_headers:
-                for k, v in kafka_headers:
-                    val = v.decode("utf-8") if isinstance(v, bytes) else v
-                    headers_dict[k] = val
+    consumer = Consumer({
+        "bootstrap.servers": settings.kafka_brokers,
+        "group.id": settings.kafka_group_id,
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
+        "enable.partition.eof": False,
+    })
+    producer = Producer({"bootstrap.servers": settings.kafka_brokers, "enable.idempotence": True})
+    alerts = AlertClient(settings.alert_endpoint, settings.internal_alert_secret)
+    stop = threading.Event()
+    alerts.sleep = stop.wait  # backoff sleeps wake up on shutdown
+    processor = Processor(scorer, alerts, DeadLetterQueue(producer, settings.kafka_dlq_topic), health)
+    install_signal_handlers(stop)
 
-            parent_context = propagate.extract(headers_dict)
-
-            # Start Python child span linked to Node.js Gateway span
-            with tracer.start_as_current_span("kafka.consume", context=parent_context) as span:
-                try:
-                    raw_data: str = msg.value().decode("utf-8")
-                    features: dict = json.loads(raw_data)
-                except (json.JSONDecodeError, UnicodeDecodeError, Exception) as parse_err:
-                    logger.error(
-                        "MALFORMED MESSAGE ENCOUNTERED | Offset: %s | Error: %s | Routing to Dead-Letter Queue (DLQ)",
-                        msg.offset(),
-                        str(parse_err),
-                    )
-                    span.set_attribute("error", True)
-                    span.set_attribute("error.type", "malformed_json_dlq")
-                    continue
-
-                req_size: int = features.get("requestByteSize", features.get("requestByteBySize", 0))
-                res_size: int = features.get("responseByteSize", features.get("responseByteBySize", 0))
-                latency: int = features.get("latencyMs", 0)
-                tenant_id: Optional[str] = features.get("tenantId")
-
-                span.set_attribute("tenant.id", tenant_id or "")
-                span.set_attribute("request.size", req_size)
-                span.set_attribute("response.size", res_size)
-                span.set_attribute("latency.ms", latency)
-
-                X_test: npt.NDArray[np.float64] = np.array([[req_size, res_size, latency]])
-                score: float = model.decision_function(X_test)[0]
-                prediction: int = model.predict(X_test)[0]
-
-                if prediction == -1:
-                    shap_values = explainer.shap_values(X_test)
-
-                    if isinstance(shap_values, list):
-                        shap_arr = shap_values[0][0]
-                    else:
-                        shap_arr = shap_values[0]
-
-                    feature_values: list[int] = [req_size, res_size, latency]
-
-                    abs_shap = np.abs(shap_arr)
-                    max_idx: int = int(np.argmax(abs_shap))
-                    primary_feature: str = FEATURE_NAMES[max_idx]
-                    primary_value: int = feature_values[max_idx]
-
-                    logger.warning(
-                        "ANOMALY detected for tenant %s | Primary driver: %s (Value: %s) | Score: %.4f",
-                        tenant_id,
-                        primary_feature,
-                        primary_value,
-                        score,
-                    )
-
-                    send_alert(
-                        tenant_id,
-                        f"Isolation Forest detected abnormal traffic. Driven primarily by {primary_feature} (Value: {primary_value})",
-                        {
-                            "latencyMs": latency,
-                            "requestByteSize": req_size,
-                            "primaryFeature": primary_feature,
-                            "primaryValue": primary_value,
-                        },
-                    )
-                else:
-                    logger.info(
-                        "Traffic Normal | Tenant: %s | Latency: %dms | Score: %.4f",
-                        tenant_id,
-                        latency,
-                        score,
-                    )
-
-    except KeyboardInterrupt:
-        logger.info("Shutting down AI worker...")
-
+    consumer.subscribe([settings.kafka_topic])
+    logger.info("consumer started", extra={"topic": settings.kafka_topic, "group": settings.kafka_group_id,
+                                           "modelVersion": loaded.version})
+    code = 1
+    try:
+        code = run_loop(consumer, processor, health, stop, KafkaError)
     finally:
+        logger.info("shutting down")
+        health.update(started=False)
         consumer.close()
-        logger.info("Kafka Consumer closed")
+        producer.flush(10)
+        logger.info("consumer closed")
+    return code
 
 
 if __name__ == "__main__":
-    start_consumer()
+    sys.exit(main())

@@ -1,14 +1,16 @@
 import { Hono } from "hono";
 import { authMiddleware, type Env } from "../middleware/auth.js";
 import { rateLimiterMiddleware } from "../middleware/rateLimiter.js";
+import { telemetryMiddleware } from "../proxy/telemetry.js";
 import { proxyHandler } from "../proxy/handler.js";
+import { resolveRateLimitConfig } from "../services/rateLimitConfig.service.js";
 
 const gatewayRouter = new Hono<Env>();
 
-// Apply security & traffic control pipeline to all proxied traffic
-gatewayRouter.use("*", authMiddleware, rateLimiterMiddleware());
+// Order matters: telemetry needs the tenant set by auth, and must wrap the rate
+// limiter so that 429s are recorded too.
+gatewayRouter.use("*", authMiddleware, telemetryMiddleware, rateLimiterMiddleware(resolveRateLimitConfig));
 
-// Wildcard catch-all: any HTTP method, any sub-path
 gatewayRouter.all("/*", proxyHandler);
 
 export default gatewayRouter;

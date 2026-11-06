@@ -1,29 +1,279 @@
 @import "tailwindcss";
 
+/* Dark mode is an attribute set before first paint by the script in app/layout.tsx,
+   so "system" can resolve without a flash and an explicit choice can override it. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 :root {
-  --background: #0f1115;
-  --foreground: #e5e7eb;
+  color-scheme: light;
+
+  /* Surfaces */
+  --canvas: oklch(0.982 0.002 250);
+  --surface: oklch(1 0 0);
+  --sunken: oklch(0.965 0.003 250);
+  --hover: oklch(0.955 0.004 250);
+
+  /* Lines */
+  --line: oklch(0.915 0.004 250);
+  --line-strong: oklch(0.83 0.006 250);
+
+  /* Ink */
+  --fg: oklch(0.21 0.012 255);
+  --fg-2: oklch(0.42 0.012 255);
+  --fg-3: oklch(0.5 0.012 255);
+
+  /* Primary actions are ink, not hue. Blue means selection, focus and links only. */
+  --primary: oklch(0.25 0.012 255);
+  --primary-hover: oklch(0.34 0.012 255);
+  --primary-fg: oklch(0.99 0 0);
+  --accent: oklch(0.5 0.17 256);
+  --accent-soft: oklch(0.955 0.02 256);
+
+  /* Status */
+  --ok: oklch(0.45 0.12 152);
+  --ok-soft: oklch(0.96 0.03 152);
+  --warn: oklch(0.47 0.1 70);
+  --warn-soft: oklch(0.96 0.045 85);
+  --bad: oklch(0.5 0.19 27);
+  --bad-soft: oklch(0.96 0.02 27);
+  --neutral-soft: oklch(0.95 0.004 250);
+
+  /* Charts: categorical slots validated for colorblind separation, plus status marks. */
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-warn: #eda100;
+  --chart-bad: #d03b3b;
+  --chart-grid: oklch(0.93 0.003 250);
+
+  --elevation: 0 1px 2px oklch(0.2 0.01 255 / 0.06), 0 12px 32px -8px oklch(0.2 0.01 255 / 0.18);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --canvas: oklch(0.155 0.004 255);
+  --surface: oklch(0.19 0.004 255);
+  --sunken: oklch(0.172 0.004 255);
+  --hover: oklch(0.235 0.005 255);
+
+  --line: oklch(0.27 0.005 255);
+  --line-strong: oklch(0.36 0.006 255);
+
+  --fg: oklch(0.955 0.002 255);
+  --fg-2: oklch(0.77 0.006 255);
+  --fg-3: oklch(0.69 0.007 255);
+
+  --primary: oklch(0.95 0.002 255);
+  --primary-hover: oklch(0.85 0.003 255);
+  --primary-fg: oklch(0.17 0.004 255);
+  --accent: oklch(0.74 0.13 256);
+  --accent-soft: oklch(0.27 0.05 256);
+
+  --ok: oklch(0.78 0.14 152);
+  --ok-soft: oklch(0.27 0.045 152);
+  --warn: oklch(0.82 0.13 85);
+  --warn-soft: oklch(0.28 0.05 85);
+  --bad: oklch(0.76 0.15 25);
+  --bad-soft: oklch(0.28 0.06 25);
+  --neutral-soft: oklch(0.26 0.005 255);
+
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-warn: #c98500;
+  --chart-bad: #e66767;
+  --chart-grid: oklch(0.25 0.005 255);
+
+  --elevation: 0 1px 2px oklch(0 0 0 / 0.4), 0 16px 40px -8px oklch(0 0 0 / 0.65);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --animate-shimmer: shimmer 1.5s ease-in-out infinite;
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-fg: var(--primary-fg);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-neutral-soft: var(--neutral-soft);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* A tight fixed scale: product UI, read at one distance. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.375rem;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.5rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+
+  --shadow-pop: var(--elevation);
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
+html {
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+/* Stops the page jumping sideways when content first overflows. Phones overlay
+   their scrollbars, so reserving the space there would only waste it. */
+@media (min-width: 64rem) {
+  html {
+    scrollbar-gutter: stable;
   }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+  caret-color: var(--accent);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+a {
+  text-underline-offset: 3px;
+}
+
+button:not(:disabled),
+summary,
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+/* Data tables: one shape across every page. */
+.fg-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+.fg-table th {
+  padding: 0.5rem 1rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--fg-3);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+  background: var(--sunken);
+}
+.fg-table td {
+  padding: 0.625rem 1rem;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line);
+}
+.fg-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.fg-table tbody tr:hover {
+  background: color-mix(in oklch, var(--hover) 55%, transparent);
+}
+@media (max-width: 40rem) {
+  .fg-table th,
+  .fg-table td {
+    padding-inline: 0.75rem;
+  }
+}
+.fg-table th.num,
+.fg-table td.num {
+  text-align: right;
+}
+
+/* Modal dialogs and the mobile navigation drawer use the native <dialog>, which
+   brings the focus trap, Esc handling and inert background with it. */
+dialog {
+  color: var(--fg);
+}
+dialog::backdrop {
+  background: oklch(0.15 0.01 255 / 0.5);
+}
+dialog.fg-modal[open] {
+  animation: fg-rise 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+dialog.fg-drawer[open] {
+  animation: fg-slide 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes fg-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes fg-slide {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+.fg-skeleton {
+  background: var(--neutral-soft);
+  border-radius: 4px;
+  animation: fg-pulse 1.6s ease-in-out infinite;
+}
+@keyframes fg-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after,
+  dialog[open] {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* The chart library outlines its SVG surface on mouse clicks. Keyboard focus stays visible. */
+.recharts-surface:focus,
+.recharts-wrapper:focus {
+  outline: none;
+}
+.recharts-wrapper:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

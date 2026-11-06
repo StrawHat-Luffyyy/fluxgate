@@ -1,62 +1,35 @@
 import { Hono } from "hono";
-import { authMiddleware } from "../middleware/auth.js";
+import { z } from "zod";
+import { parseBody, parseId } from "../lib/validate.js";
 import { dashBoardAuth, type DashboardEnv } from "../middleware/dashBoardAuth.js";
-import { getCookie } from "hono/cookie";
-import { verify } from "hono/jwt";
-import { env } from "../config/env.js";
-import { rateLimiterMiddleware } from "../middleware/rateLimiter.js";
-import { getKeysByTenantId, createApiKey } from "../services/keys.service.js";
+import { requiredRole } from "../middleware/rbac.js";
+import {
+  createApiKey,
+  listKeys,
+  revokeApiKey,
+  rotateApiKey,
+} from "../services/keys.service.js";
+
+const createKeySchema = z.object({
+  name: z.string().trim().min(1).max(80).default("Default"),
+  expiresInDays: z.number().int().min(1).max(3650).optional(),
+});
 
 export const keysRouter = new Hono<DashboardEnv>();
 
-keysRouter.get("/", dashBoardAuth, async (c) => {
-  const tenantId = c.get("tenantId");
-  const keys = await getKeysByTenantId(tenantId);
+// The tenant always comes from the session. A request body can never select it.
+keysRouter.use("*", dashBoardAuth);
 
-  return c.json({
-    success: true,
-    message: "Fetched keys successfully",
-    keys,
-    apiKey: keys,
-  });
+keysRouter.get("/", requiredRole("viewer"), async (c) => {
+  return c.json({ keys: await listKeys(c.get("tenantId")) });
 });
 
-//Generate API key
-keysRouter.post("/", async (c) => {
-  let tenantId = c.get("tenantId");
-
-  // Check for cookie session first (Dashboard user)
-  const token = getCookie(c, "Fluxgate_session");
-  if (token) {
-    try {
-      const decodedPayload = await verify(token, env.JWT_SECRET, {
-        alg: "HS256",
-      });
-      tenantId = decodedPayload.tenantId as string;
-    } catch (err) {
-      return c.json(
-        {
-          success: false,
-          message: "Invalid session cookie",
-        },
-        401,
-      );
-    }
-  }
-
-  // Fallback to request body tenantId (for unauthenticated Onboarding calls)
-  if (!tenantId) {
-    try {
-      const body = await c.req.json();
-      tenantId = body.tenantId;
-    } catch (e) {
-      // No body or parsing failed
-    }
-  }
-
-  const rawKey = await createApiKey(tenantId);
+keysRouter.post("/", requiredRole("admin"), async (c) => {
+  const input = await parseBody(c, createKeySchema);
+  const { key, rawKey } = await createApiKey(c.get("tenantId"), input);
   return c.json(
     {
+      key,
       apiKey: rawKey,
       message: "Store this securely, it will only be shown once.",
     },
@@ -64,10 +37,25 @@ keysRouter.post("/", async (c) => {
   );
 });
 
-// Protected test route
-keysRouter.get("/protected", authMiddleware, rateLimiterMiddleware(), (c) => {
-  return c.json({
-    tenantId: c.get("tenantId"),
-    message: "Authentication successful",
-  });
+keysRouter.post("/:id/rotate", requiredRole("admin"), async (c) => {
+  const { key, rawKey } = await rotateApiKey(
+    c.get("tenantId"),
+    parseId(c.req.param("id"), "API key"),
+  );
+  return c.json(
+    {
+      key,
+      apiKey: rawKey,
+      message: "Store this securely, it will only be shown once.",
+    },
+    201,
+  );
+});
+
+keysRouter.delete("/:id", requiredRole("admin"), async (c) => {
+  const key = await revokeApiKey(
+    c.get("tenantId"),
+    parseId(c.req.param("id"), "API key"),
+  );
+  return c.json({ key });
 });

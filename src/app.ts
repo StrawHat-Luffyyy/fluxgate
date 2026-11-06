@@ -1,19 +1,24 @@
+import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { createMiddleware } from "hono/factory";
-import healthRouter from "./routes/health.js";
-import { keysRouter } from "./routes/keys.js";
-import gatewayRouter from "./routes/gateway.js";
-import internalRouter from "./routes/internal.js";
-import { register, metricsMiddleware } from "./monitoring/metrics.js";
-import adminRouter from "./routes/admin.js";
-import { rateLimiterMiddleware } from "./middleware/rateLimiter.js";
-import { authMiddleware } from "./middleware/auth.js";
-import authRouter from "./routes/auth.js";
-import analyticsRouter from "./routes/analytics.js";
-import tenantsRouter from "./routes/tenants.js";
-import { errorHandler } from "./middleware/errorHandler.js";
+import { context as otelContext, propagation } from "@opentelemetry/api";
+import { env } from "./config/env.js";
 import { createChildLogger } from "./lib/logger.js";
+import { createRequestContext, runWithRequestContext } from "./lib/requestContext.js";
+import { errorHandler } from "./middleware/errorHandler.js";
+import { metricsMiddleware, register } from "./monitoring/metrics.js";
+import adminRouter from "./routes/admin.js";
+import analyticsRouter from "./routes/analytics.js";
+import anomaliesRouter from "./routes/anomalies.js";
+import authRouter from "./routes/auth.js";
+import gatewayRouter from "./routes/gateway.js";
+import healthRouter from "./routes/health.js";
+import internalRouter from "./routes/internal.js";
+import { keysRouter } from "./routes/keys.js";
+import teamRouter from "./routes/team.js";
+import webhooksRouter from "./routes/webhooks.js";
 
 const log = createChildLogger("http");
 
@@ -27,32 +32,67 @@ const app = new Hono<AppEnv>();
 
 // --- Global Middleware Pipeline ---
 
-// CORS (credentials: true preserved for HttpOnly cookie auth flow)
-app.use(
-  "*",
-  cors({
-    origin: "http://localhost:3001",
-    credentials: true,
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
-  }),
-);
+const dashboardCors = cors({
+  origin: env.CORS_ORIGINS,
+  credentials: true,
+  allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowHeaders: ["Content-Type", "Authorization"],
+});
 
-// Request ID injection
+// CORS applies to the dashboard API only. Proxied responses keep whatever CORS
+// headers the upstream chose to send.
+app.use("*", async (c, next) => {
+  if (c.req.path.startsWith("/gateway")) return next();
+  return dashboardCors(c, next);
+});
+
+// Always generated here, never accepted from the client: anomalies are unique per
+// (tenant, requestId), so a client-chosen id could suppress a later alert.
 app.use(
   "*",
   createMiddleware<AppEnv>(async (c, next) => {
     const requestId = crypto.randomUUID();
     c.set("requestId", requestId);
-    c.header("X-Request-Id", requestId);
-    await next();
+    // Trusted senders only: a proxy we run, and ai-service continuing the trace of the
+    // request it is alerting on. A forged alert is rejected before it does anything.
+    const trusted = env.TRUST_PROXY || c.req.path === "/internal/alerts";
+    const context = createRequestContext(
+      requestId,
+      trusted
+        ? { traceparent: c.req.header("traceparent"), tracestate: c.req.header("tracestate") }
+        : undefined,
+    );
+    // With OpenTelemetry on, spans join this trace, so logs and spans share one id.
+    // Without it, both calls here do nothing.
+    const otel = propagation.extract(otelContext.active(), { traceparent: context.traceparent });
+    await runWithRequestContext(context, () => otelContext.with(otel, () => next()));
+    c.res.headers.set("X-Request-Id", requestId);
+    c.res.headers.set("X-Trace-Id", context.traceId);
   }),
 );
 
-// Prometheus metrics
 app.use("*", metricsMiddleware);
 
+// These routes buffer the whole body before anything else can reject the request,
+// including unauthenticated ones. /gateway streams, so the limit does not apply.
+const limitDashboardBody = bodyLimit({
+  maxSize: 256 * 1024,
+  onError: (c) =>
+    c.json({ error: "PAYLOAD_TOO_LARGE", message: "Request body is too large" }, 413),
+});
+app.use("*", async (c, next) => {
+  if (c.req.path.startsWith("/gateway")) return next();
+  return limitDashboardBody(c, next);
+});
+
 app.get("/metrics", async (c) => {
+  if (env.METRICS_TOKEN) {
+    const provided = Buffer.from(c.req.header("authorization") ?? "");
+    const expected = Buffer.from(`Bearer ${env.METRICS_TOKEN}`);
+    if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+      return c.json({ error: "Unauthorized", message: "Invalid metrics token" }, 401);
+    }
+  }
   c.header("Content-Type", register.contentType);
   return c.text(await register.metrics());
 });
@@ -61,14 +101,12 @@ app.get("/metrics", async (c) => {
 app.use("*", async (c, next) => {
   const start = Date.now();
   await next();
-  const ms = Date.now() - start;
   log.info(
     {
       method: c.req.method,
       path: c.req.path,
       status: c.res.status,
-      latencyMs: ms,
-      requestId: c.get("requestId"),
+      latencyMs: Date.now() - start,
     },
     `${c.req.method} ${c.req.path}`,
   );
@@ -76,43 +114,17 @@ app.use("*", async (c, next) => {
 
 // --- Routes ---
 
-// Health route
 app.route("/health", healthRouter);
-
-// Keys route
+app.route("/auth", authRouter);
 app.route("/keys", keysRouter);
-app.route("/api/keys", keysRouter);
-
-// Wildcard proxy router
+app.route("/team", teamRouter);
+app.route("/admin", adminRouter);
+app.route("/webhooks", webhooksRouter);
+app.route("/analytics", analyticsRouter);
+app.route("/anomalies", anomaliesRouter);
+app.route("/internal", internalRouter);
 app.route("/gateway", gatewayRouter);
 
-// Internal routes
-app.route("/internal", internalRouter);
-
-// Admin routes
-app.route("/admin", adminRouter);
-
-// Auth routes
-app.route("/auth", authRouter);
-
-// Analytics routes
-app.route("/analytics", analyticsRouter);
-
-// Tenants route (extracted from inline handler)
-app.route("/tenants", tenantsRouter);
-
-// Protected test route
-app.get("/test-rate-limit", authMiddleware, rateLimiterMiddleware(), (c) =>
-  c.json({
-    success: true,
-  }),
-);
-
-app.get("/debug-sentry", () => {
-  throw new Error("Test Sentry Distributed Trace Exception");
-});
-
-// Custom 404 Handler
 app.notFound((c) => {
   return c.json(
     {
@@ -125,7 +137,6 @@ app.notFound((c) => {
   );
 });
 
-// Centralized Error Handler
 app.onError(errorHandler);
 
 export default app;

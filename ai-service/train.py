@@ -1,67 +1,121 @@
-"""
-FluxGate AI Model Training Script
+"""Train an Isolation Forest and write a versioned artifact set under models/<version>/.
 
-Trains an Isolation Forest anomaly detection model on synthetic
-normal traffic data and saves both the model and SHAP baseline data.
+    python train.py                        # synthetic traffic (see synthetic.py, NOT real data)
+    python train.py --csv traffic.csv      # columns: request_byte_size,response_byte_size,latency_ms
+    python train.py --version v3-custom
 """
 
+from __future__ import annotations
+
+import argparse
+import csv
 import logging
-import pickle
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
-import numpy.typing as npt
+import sklearn
 from sklearn.ensemble import IsolationForest
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='{"timestamp":"%(asctime)s","level":"%(levelname)s","module":"%(name)s","message":"%(message)s"}',
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-logger = logging.getLogger("fluxgate-ai-trainer")
+from jsonlog import configure_logging
+from model_store import write_version
+from scoring import FEATURE_NAMES, to_model_space
+from settings import DEFAULT_MODEL_DIR
+from synthetic import generate_traffic
+
+logger = logging.getLogger("fluxgate.train")
+
+CSV_COLUMNS = ["request_byte_size", "response_byte_size", "latency_ms"]
+MIN_ROWS = 100
+BASELINE_ROWS = 200
 
 
-def train_model(data: npt.NDArray[np.float64] | None = None) -> None:
-    """
-    Trains an Isolation Forest model on the provided data or synthetic normal traffic.
+def load_csv(path: str) -> np.ndarray:
+    rows = []
+    skipped = 0
+    with open(path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        missing = [c for c in CSV_COLUMNS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise SystemExit(f"CSV is missing required columns: {missing}")
+        for rec in reader:
+            try:
+                row = [float(rec[c]) for c in CSV_COLUMNS]
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
+            if not all(np.isfinite(row)) or min(row) < 0:
+                skipped += 1
+                continue
+            rows.append(row)
+    if skipped:
+        logger.warning("skipped unusable CSV rows", extra={"skipped": skipped})
+    if len(rows) < MIN_ROWS:
+        raise SystemExit(f"need at least {MIN_ROWS} usable rows, got {len(rows)}")
+    return np.array(rows, dtype=float)
 
-    Args:
-        data: Optional pre-collected training data with shape (n_samples, 3).
-              Columns: [requestByteSize, responseByteSize, latencyMs].
-              If None, synthetic normal distributions are generated.
-    """
-    logger.info("Training Isolation Forest model...")
 
-    if data is None:
-        np.random.seed(42)
-        normal_req_sizes: npt.NDArray[np.float64] = np.random.normal(500, 100, 1000)
-        normal_res_sizes: npt.NDArray[np.float64] = np.random.normal(2500, 500, 1000)
-        normal_latencies: npt.NDArray[np.float64] = np.random.normal(100, 20, 1000)
+def next_version(model_dir: str, source: str) -> str:
+    numbers = [
+        int(m.group(1))
+        for p in Path(model_dir).glob("v*")
+        if p.is_dir() and (m := re.match(r"v(\d+)", p.name))
+    ]
+    n = max(numbers + [1]) + 1  # v1 was the legacy pickle model
+    return f"v{n}-{source}-{datetime.now(timezone.utc):%Y%m%d}"
 
-        # Combine into a 2D array (1000 rows, 3 columns)
-        X_train: npt.NDArray[np.float64] = np.column_stack(
-            (normal_req_sizes, normal_res_sizes, normal_latencies)
-        )
+
+def train(X: np.ndarray, source: str, version: str, model_dir: str, contamination: float, seed: int) -> Path:
+    params = {"n_estimators": 200, "contamination": contamination, "random_state": seed}
+    model = IsolationForest(**params)
+    model.fit(to_model_space(X))
+
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(X), size=min(BASELINE_ROWS, len(X)), replace=False)
+    baseline = X[idx]  # raw units; the scorer applies log1p when loading
+
+    import shap
+
+    metadata = {
+        "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "sklearnVersion": sklearn.__version__,
+        "numpyVersion": np.__version__,
+        "shapVersion": shap.__version__,
+        "featureNames": FEATURE_NAMES,
+        "featureTransform": "log1p",
+        "hyperparameters": params,
+        "trainingSource": source,
+        "trainingRows": int(len(X)),
+        "baselineRows": int(len(baseline)),
+        "featureMax": {n: float(v) for n, v in zip(FEATURE_NAMES, X.max(axis=0))},
+    }
+    return write_version(model_dir, version, model, baseline, metadata)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--csv", help="exported real traffic; default is synthetic data")
+    parser.add_argument("--version", help="version label, e.g. v3-custom (default: auto)")
+    parser.add_argument("--rows", type=int, default=20000, help="synthetic rows (default 20000)")
+    parser.add_argument("--contamination", type=float, default=0.01)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--model-dir", default=DEFAULT_MODEL_DIR)
+    args = parser.parse_args(argv)
+
+    configure_logging("INFO")
+    if args.csv:
+        X, source = load_csv(args.csv), args.csv
+        label = "csv"
     else:
-        X_train = data
-
-    # Initialize Isolation Forest.
-    # contamination=0.01 means we expect ~1% of traffic to be anomalous.
-    model = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)
-    model.fit(X_train)
-
-    # Save the new model to disk.
-    # Note: We overwrite model.pkl. The consumer will reload it dynamically.
-    with open("model.pkl", "wb") as f:
-        pickle.dump(model, f)
-
-    logger.info("Model trained and saved to model.pkl")
-
-    # Return the training data so we can build our SHAP baseline explainer
-    with open("baseline_data.pkl", "wb") as f:
-        pickle.dump(X_train, f)
-
-    logger.info("Baseline data saved to baseline_data.pkl")
+        X, source = generate_traffic(args.rows, args.seed), "synthetic"
+        label = "synthetic"
+    version = args.version or next_version(args.model_dir, label)
+    vdir = train(X, source, version, args.model_dir, args.contamination, args.seed)
+    logger.info("model written", extra={"version": version, "path": str(vdir), "rows": len(X), "source": source})
+    return 0
 
 
 if __name__ == "__main__":
-    train_model()
+    sys.exit(main())

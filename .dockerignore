@@ -1,117 +1,20 @@
-# ============================================================================
-# FluxGate .dockerignore
-# Exclude everything not required for the Docker build context.
-# This reduces context upload size, speeds up builds, and prevents
-# secrets/unnecessary files from leaking into the image.
-# ============================================================================
+# Allow-list: the build context holds only what the Dockerfiles copy, so a secrets
+# file or a new local directory can never end up in an image by accident.
+*
 
-# ---------------------------------------------------------------------------
-# Dependencies — rebuilt inside Docker for correct platform (linux/musl)
-# ---------------------------------------------------------------------------
-node_modules/
-.pnpm-store/
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.json
+!src/
+!drizzle/
+!frontend/
 
-# ---------------------------------------------------------------------------
-# Build output — rebuilt by tsc in the builder stage
-# ---------------------------------------------------------------------------
-dist/
-
-# ---------------------------------------------------------------------------
-# Version control — no history needed in build context
-# ---------------------------------------------------------------------------
-.git/
-.gitignore
-
-# ---------------------------------------------------------------------------
-# Environment & secrets — NEVER bake secrets into images
-# ---------------------------------------------------------------------------
-.env
-.env.*
-!.env.example
-
-# ---------------------------------------------------------------------------
-# AI service — separate Python service, not part of this Node.js image
-# ---------------------------------------------------------------------------
-ai-service/
-
-# ---------------------------------------------------------------------------
-# Documentation — not needed for build
-# ---------------------------------------------------------------------------
-docs/
-*.md
-LICENSE
-
-# ---------------------------------------------------------------------------
-# Database migrations tooling — not needed at runtime
-# ---------------------------------------------------------------------------
-drizzle/
-drizzle.config.ts
-
-# ---------------------------------------------------------------------------
-# IDE & editor configs
-# ---------------------------------------------------------------------------
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# ---------------------------------------------------------------------------
-# OS artifacts
-# ---------------------------------------------------------------------------
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# ---------------------------------------------------------------------------
-# Test files — load tests and future unit tests
-# ---------------------------------------------------------------------------
-src/tests/
-coverage/
-.nyc_output/
-*.lcov
-
-# ---------------------------------------------------------------------------
-# CI/CD — not needed inside the container
-# ---------------------------------------------------------------------------
-.github/
-.gitlab-ci.yml
-
-# ---------------------------------------------------------------------------
-# Logs & temporary files
-# ---------------------------------------------------------------------------
-logs/
-*.log
-npm-debug.log*
-pids/
-*.pid
-*.pid.lock
-
-# ---------------------------------------------------------------------------
-# Python artifacts (from ai-service venv, eggs, etc.)
-# ---------------------------------------------------------------------------
-__pycache__/
-*.py[cod]
-venv/
-.venv/
-*.egg-info/
-
-# ---------------------------------------------------------------------------
-# Cache directories
-# ---------------------------------------------------------------------------
-.cache/
-.parcel-cache/
-.eslintcache
-
-# ---------------------------------------------------------------------------
-# Docker — prevent recursive context inclusion
-# ---------------------------------------------------------------------------
-Dockerfile
-docker-compose*.yml
-.dockerignore
-
-# ---------------------------------------------------------------------------
-# Agents / AI config
-# ---------------------------------------------------------------------------
-.agents/
-.gemini/
+**/node_modules
+**/.next
+**/.env
+**/.env.*
+frontend/e2e
+frontend/package-lock.json
+frontend/tsconfig.tsbuildinfo
+frontend/playwright.config.ts

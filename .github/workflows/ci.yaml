@@ -13,16 +13,15 @@ concurrency:
 env:
   NODE_VERSION: "22"
   PYTHON_VERSION: "3.12"
-  DOCKER_IMAGE_NAME: fluxgate
 
 jobs:
   # -----------------------------------------------
-  # Job 1: Backend — type check, test, build
+  # Backend: types, unit and integration tests with coverage thresholds, build
   # -----------------------------------------------
   backend:
     name: Backend
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -43,22 +42,72 @@ jobs:
       - name: Type check
         run: pnpm exec tsc --noEmit
 
-      - name: Run tests
-        run: pnpm vitest run
-        env:
-          DATABASE_URL: "postgresql://user:password@localhost:5432/testdb"
-          NODE_ENV: "test"
+      - name: Unit tests (no services)
+        run: pnpm test
+
+      - name: Start Postgres and Redis
+        run: docker compose up -d --wait postgres redis
+
+      - name: Integration tests with coverage (real Postgres and Redis)
+        run: pnpm test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/lcov.info
+          if-no-files-found: ignore
 
       - name: Build
         run: pnpm build
 
   # -----------------------------------------------
-  # Job 2: Frontend — type check, build
+  # End to end: gateway, Kafka, Python consumer, alert, webhook, as real processes
+  # -----------------------------------------------
+  e2e:
+    name: End to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pip install -r ai-service/requirements.txt
+
+      - name: Start Postgres, Redis and Redpanda
+        run: docker compose up -d --wait postgres redis redpanda
+
+      - name: Run end-to-end tests
+        run: pnpm test:e2e
+        env:
+          PYTHON_BIN: python
+
+  # -----------------------------------------------
+  # Frontend: lint, build and browser tests
   # -----------------------------------------------
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -76,16 +125,39 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Lint
+        run: pnpm --filter frontend lint
+
       - name: Build
         run: pnpm --filter frontend build
 
+      - name: Start Postgres, Redis and Redpanda
+        run: docker compose up -d --wait postgres redis redpanda
+
+      - name: Create the browser test database
+        run: docker compose exec -T postgres psql -U fluxgate -d postgres -c 'create database fluxgate_ui_test'
+
+      - name: Install Chromium
+        run: pnpm --filter frontend exec playwright install --with-deps chromium
+
+      - name: Browser tests against the real gateway
+        run: pnpm --filter frontend test:e2e
+
+      - name: Upload browser test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright
+          path: frontend/e2e/artifacts
+          if-no-files-found: ignore
+
   # -----------------------------------------------
-  # Job 3: Python AI Service — syntax + type check
+  # AI service: pytest against the shipped model
   # -----------------------------------------------
   ai-service:
     name: AI Service
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     defaults:
       run:
@@ -100,49 +172,59 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Syntax check
-        run: python -m py_compile consumer.py && python -m py_compile train.py
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # train.py and evaluate.py are scripts that no test imports.
+      - name: Check all modules compile
+        run: python -m compileall -q .
+
+      - name: Run tests with coverage
+        run: python -m pytest --cov=. --cov-report=term-missing
 
   # -----------------------------------------------
-  # Job 4: Docker — build + validate image
+  # Docker: build all images, start the whole demo, and prove it works
   # -----------------------------------------------
   docker:
-    name: Docker
+    name: Docker demo
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     needs: [backend]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Start the whole system
+        run: docker compose --profile full up -d --build --wait --wait-timeout 300
 
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          load: true
-          tags: ${{ env.DOCKER_IMAGE_NAME }}:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Validate image
+      - name: Images run as non-root
         run: |
-          echo "Verifying container runs as non-root user..."
-          CONTAINER_USER=$(docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci whoami)
-          if [ "$CONTAINER_USER" != "fluxgate" ]; then
-            echo "::error::Container running as '$CONTAINER_USER' instead of 'fluxgate'"
-            exit 1
-          fi
-          echo "✓ Container runs as: $CONTAINER_USER"
+          for service in gateway frontend ai-service; do
+            user=$(docker compose --profile full exec -T "$service" id -un)
+            echo "$service runs as $user"
+            test "$user" = "fluxgate"
+          done
 
-          echo "Verifying Node.js version..."
-          docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci node --version
+      - name: Demo traffic produces a real anomaly and webhook delivery
+        run: |
+          curl -sf -c /tmp/session -X POST http://localhost:3000/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"admin@fluxgate-demo.example.com","password":"fluxgate-demo-password"}' > /dev/null
+          for _ in $(seq 1 60); do
+            anomalies=$(curl -sf -b /tmp/session http://localhost:3000/anomalies | jq '.anomalies | length')
+            deliveries=$(curl -sf -b /tmp/session http://localhost:3000/webhooks/deliveries | jq '[.deliveries[] | select(.status == "delivered")] | length')
+            echo "anomalies=$anomalies delivered=$deliveries"
+            if [ "$anomalies" -gt 0 ] && [ "$deliveries" -gt 0 ]; then exit 0; fi
+            sleep 5
+          done
+          exit 1
 
-          echo "Verifying build output..."
-          docker run --rm ${{ env.DOCKER_IMAGE_NAME }}:ci ls -la dist/server.js
+      - name: Prometheus scrapes the gateway and Grafana has the dashboard
+        run: |
+          curl -sf http://localhost:9090/api/v1/targets | jq -e '.data.activeTargets[0].health == "up"'
+          curl -sf http://localhost:3002/api/dashboards/uid/fluxgate-gateway | jq -e '.dashboard.panels | length > 0'
 
-          echo "✓ Docker validation passed"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --profile full logs --tail=100

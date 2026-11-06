@@ -1,0 +1,30 @@
+{
+  "createdAt": "2026-11-06T09:05:18Z",
+  "sklearnVersion": "1.3.2",
+  "numpyVersion": "1.26.2",
+  "shapVersion": "0.49.1",
+  "featureNames": [
+    "requestByteSize",
+    "responseByteSize",
+    "latencyMs"
+  ],
+  "featureTransform": "log1p",
+  "hyperparameters": {
+    "n_estimators": 200,
+    "contamination": 0.01,
+    "random_state": 42
+  },
+  "trainingSource": "synthetic",
+  "trainingRows": 20000,
+  "baselineRows": 200,
+  "featureMax": {
+    "requestByteSize": 43932.0,
+    "responseByteSize": 119238.0,
+    "latencyMs": 1448.0
+  },
+  "version": "v3-synthetic-20261106",
+  "sha256": {
+    "model.joblib": "76756de1115a3c3fa2438a76bd7c7f12180f280decf4da98bbce04f61d3be446",
+    "baseline.joblib": "f713e3ce7a6ea6d69423c7fab4eeb7ab121eccf0f0c28251de48387fb96b5337"
+  }
+}
