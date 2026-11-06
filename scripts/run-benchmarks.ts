@@ -243,7 +243,7 @@ const benchGateway = async () => {
       COOKIE_SECURE: "false",
       TRUST_PROXY: "false",
       ALLOW_PRIVATE_TARGETS: "true",
-      FLUXGATE_DEMO_MODE: "1",
+      FLUXGATE_DEMO_MODE: "true",
       OTEL_ENABLED: "false",
       SENTRY_DSN: "",
     },
@@ -370,7 +370,7 @@ const main = async () => {
     redis: scripts.version,
     k6: execFileSync("k6", ["version"]).toString().split("\n")[0].trim(),
     gitCommit: execFileSync("git", ["rev-parse", "--short", "HEAD"]).toString().trim(),
-    uncommittedChanges: execFileSync("git", ["status", "--porcelain"]).toString().trim().length > 0,
+    uncommittedChanges: execFileSync("git", ["status", "--porcelain", "--untracked-files=no"]).toString().trim().length > 0,
     date: new Date().toISOString(),
   };
 
