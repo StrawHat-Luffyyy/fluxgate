@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: fluxgate-gateway
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      # The public demo token from docker-compose.yml. A real deployment should
+      # use credentials_file with a mounted secret.
+      credentials: demo-only-metrics-token
+    static_configs:
+      - targets: ["gateway:3000"]

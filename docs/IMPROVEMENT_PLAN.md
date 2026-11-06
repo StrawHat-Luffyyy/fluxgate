@@ -62,13 +62,15 @@ Status key: `[x]` done and verified, `[~]` done with a stated limitation, `[ ]` 
 
 ## Phase 4: observability and ops
 
-Not started: work stopped after Phase 3 at the owner's request.
-
-
-- [ ] Request and trace IDs in logs end to end
-- [ ] Prometheus metrics; Grafana dashboard provisioned by compose
-- [ ] Production Dockerfiles for gateway, frontend, ai-service
-- [ ] Compose profile for the whole system; seed script; one-command demo
+- [x] One request id and trace id in the logs of the gateway, consumer, alert handling and webhook worker, and sent to the upstream as headers. Generated even with OpenTelemetry off, and asserted by the pipeline e2e test. Inbound `traceparent` is honoured only from a trusted proxy and on `/internal/alerts`
+- [x] Prometheus metrics; the webhook queue depth gauge existed but was never set, and is now polled. Grafana dashboard provisioned by compose
+- [x] Production Dockerfiles for gateway, frontend, ai-service: multi-stage, non-root, healthchecks
+- [x] `pnpm demo`: the `full` compose profile, seed and live demo traffic
+- [-] Metrics from ai-service: it has `/health` counters only. The brief lists gateway metrics, and adding a second scrape target was not needed for them
+- [~] Webhook jobs re-enqueued by the sweeper log under a new trace and the delivery id, because the context is on the queue job and not in `webhook_deliveries`
+- [~] With OpenTelemetry on, a locally started trace has a parent span that is never exported, so a backend shows a missing root span. Tracing is off by default
+- [~] The queue depth gauge keeps its last value during a Redis outage
+- [~] The consumer commits per message: about 130 messages/s in the demo stack, well under the gateway's measured throughput, so sustained peak traffic builds Kafka lag rather than losing data
 
 ## Phase 5: UI
 

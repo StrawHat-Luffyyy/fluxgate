@@ -4,18 +4,20 @@ import { env } from "../config/env.js";
 import { db } from "../db/index.js";
 import { webhookDeliveries, webhookEndpoints } from "../db/schema.js";
 import { createChildLogger } from "../lib/logger.js";
+import { createRequestContext, runWithRequestContext } from "../lib/requestContext.js";
 import { decryptSecret } from "../lib/secretBox.js";
 import { signPayload } from "../lib/signature.js";
 import { BlockedTargetError, guardedFetch } from "../lib/ssrf.js";
-import { webhookDeliveries as deliveryMetric } from "../monitoring/metrics.js";
+import { webhookDeliveries as deliveryMetric, webhookQueueDepth } from "../monitoring/metrics.js";
 import { workerConnection } from "./connection.js";
-import { enqueueDelivery, WEBHOOK_QUEUE, type WebhookJob } from "./webhookQueue.js";
+import { enqueueDelivery, queueDepths, WEBHOOK_QUEUE, type WebhookJob } from "./webhookQueue.js";
 
 const log = createChildLogger("webhook-worker");
 
 const SWEEP_INTERVAL_MS = 30_000;
 const SWEEP_MIN_AGE_MS = 30_000;
 const SWEEP_BATCH = 100;
+const QUEUE_DEPTH_INTERVAL_MS = 10_000;
 
 /** A 4xx means the receiver rejected this payload; repeating it will not help. */
 const isPermanentStatus = (status: number) =>
@@ -117,6 +119,7 @@ export const processDelivery = async (job: Job<WebhookJob>) => {
         updatedAt: new Date(),
       })
       .where(eq(webhookDeliveries.id, deliveryId));
+    log.info({ deliveryId, status, attempts }, "Webhook delivered");
     return;
   }
 
@@ -146,18 +149,42 @@ export const sweepPendingDeliveries = async (minAgeMs = SWEEP_MIN_AGE_MS) => {
   return stuck.length;
 };
 
+/** A retry or a redelivery logs under the same ids as the request that caused it. */
+const processInContext = (job: Job<WebhookJob>) =>
+  runWithRequestContext(
+    createRequestContext(job.data.requestId ?? job.data.deliveryId, {
+      traceparent: job.data.traceparent,
+    }),
+    async () => {
+      try {
+        await processDelivery(job);
+      } catch (err) {
+        // Logged here because the worker's "failed" event runs outside this context.
+        log.warn(
+          {
+            deliveryId: job.data.deliveryId,
+            attemptsMade: job.attemptsMade + 1,
+            err: (err as Error).message,
+          },
+          "Webhook attempt failed",
+        );
+        throw err;
+      }
+    },
+  );
+
+const refreshQueueDepth = async () => {
+  for (const [state, count] of Object.entries(await queueDepths())) {
+    webhookQueueDepth.set({ state }, count);
+  }
+};
+
 export const startWebhookWorker = () => {
-  const worker = new Worker<WebhookJob>(WEBHOOK_QUEUE, processDelivery, {
+  const worker = new Worker<WebhookJob>(WEBHOOK_QUEUE, processInContext, {
     connection: workerConnection(),
     concurrency: 10,
   });
 
-  worker.on("failed", (job, err) => {
-    log.warn(
-      { jobId: job?.id, attemptsMade: job?.attemptsMade, err: err.message },
-      "Webhook attempt failed",
-    );
-  });
   worker.on("error", (err) => {
     log.warn({ err }, "Webhook worker connection error");
   });
@@ -167,10 +194,17 @@ export const startWebhookWorker = () => {
   }, SWEEP_INTERVAL_MS);
   sweeper.unref();
 
+  // Polled rather than read at scrape time, so a Redis outage cannot slow /metrics.
+  const depthPoller = setInterval(() => {
+    refreshQueueDepth().catch((err) => log.debug({ err }, "Queue depth refresh failed"));
+  }, QUEUE_DEPTH_INTERVAL_MS);
+  depthPoller.unref();
+
   log.info("Webhook worker started");
   return {
     close: async () => {
       clearInterval(sweeper);
+      clearInterval(depthPoller);
       await worker.close();
     },
   };

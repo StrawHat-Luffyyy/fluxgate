@@ -3,8 +3,10 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { createMiddleware } from "hono/factory";
+import { context as otelContext, propagation } from "@opentelemetry/api";
 import { env } from "./config/env.js";
 import { createChildLogger } from "./lib/logger.js";
+import { createRequestContext, runWithRequestContext } from "./lib/requestContext.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { metricsMiddleware, register } from "./monitoring/metrics.js";
 import adminRouter from "./routes/admin.js";
@@ -51,8 +53,21 @@ app.use(
   createMiddleware<AppEnv>(async (c, next) => {
     const requestId = crypto.randomUUID();
     c.set("requestId", requestId);
-    await next();
+    // Trusted senders only: a proxy we run, and ai-service continuing the trace of the
+    // request it is alerting on. A forged alert is rejected before it does anything.
+    const trusted = env.TRUST_PROXY || c.req.path === "/internal/alerts";
+    const context = createRequestContext(
+      requestId,
+      trusted
+        ? { traceparent: c.req.header("traceparent"), tracestate: c.req.header("tracestate") }
+        : undefined,
+    );
+    // With OpenTelemetry on, spans join this trace, so logs and spans share one id.
+    // Without it, both calls here do nothing.
+    const otel = propagation.extract(otelContext.active(), { traceparent: context.traceparent });
+    await runWithRequestContext(context, () => otelContext.with(otel, () => next()));
     c.res.headers.set("X-Request-Id", requestId);
+    c.res.headers.set("X-Trace-Id", context.traceId);
   }),
 );
 
@@ -92,7 +107,6 @@ app.use("*", async (c, next) => {
       path: c.req.path,
       status: c.res.status,
       latencyMs: Date.now() - start,
-      requestId: c.get("requestId"),
     },
     `${c.req.method} ${c.req.path}`,
   );

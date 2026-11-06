@@ -41,11 +41,13 @@ describe("gateway to Kafka to consumer to alert to webhook", () => {
   let upstreamUrl: string;
   let receiverUrl: string;
   const webhooks: ReceivedWebhook[] = [];
+  let hugeTraceparent: string | undefined;
 
   beforeAll(async () => {
     // A realistic delay: localhost's 1-2 ms is outside the model's training range, and
     // it is the response size this test is about.
     upstream = createServer((req, res) => {
+      if (req.url?.startsWith("/huge")) hugeTraceparent = req.headers.traceparent as string;
       const body = Buffer.alloc(req.url?.startsWith("/huge") ? OUTLIER_BYTES : 3000, "x");
       setTimeout(() => res.end(body), 80);
     });
@@ -153,6 +155,27 @@ describe("gateway to Kafka to consumer to alert to webhook", () => {
       expect(body.deliveries).toHaveLength(1);
       return body.deliveries[0].status === "delivered";
     });
+
+    // One trace id and one request id, across the upstream, the gateway, the consumer
+    // and the webhook worker: every process's logs can be joined on them.
+    const traceId = outlier.headers.get("x-trace-id") as string;
+    expect(hugeTraceparent?.split("-")[1]).toBe(traceId);
+
+    const consumerRecord = consumer
+      .output()
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((line) => line.message === "anomaly detected" && line.requestId === requestId);
+    expect(consumerRecord?.traceId).toBe(traceId);
+
+    // Development logs are pretty-printed: a record's fields are its indented lines.
+    const gatewayRecords = gateway.output().split(/\r?\n(?=\S)/);
+    for (const message of ["Anomaly recorded", "Webhook delivered"]) {
+      const record = gatewayRecords.find((r) => r.includes(message));
+      expect(record, message).toContain(traceId);
+      expect(record, message).toContain(requestId as string);
+    }
 
     // Real analytics saw all six requests, once the batcher has written them.
     const overview = await waitFor("analytics rows", async () => {

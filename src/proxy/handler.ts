@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { and, eq } from "drizzle-orm";
 import { context as otelContext, propagation, trace } from "@opentelemetry/api";
+import { currentTraceHeaders } from "../lib/requestContext.js";
 import { errors as undiciErrors } from "undici";
 import type { Env } from "../middleware/auth.js";
 import { db } from "../db/index.js";
@@ -85,10 +86,14 @@ const buildUpstreamHeaders = (c: Context<Env>, tenantId: string): Headers => {
   headers.set("x-fluxgate-tenant", tenantId);
   headers.set("x-request-id", c.get("requestId"));
 
-  // Kept for telemetry, which is emitted after this span has ended.
-  const carrier: Record<string, string> = {};
+  // Kept for telemetry, which is emitted after this span has ended. The inject adds
+  // nothing when OpenTelemetry is off, which leaves the request's own trace context.
+  const carrier: Record<string, string> = currentTraceHeaders();
   propagation.inject(otelContext.active(), carrier);
   c.set("traceCarrier", carrier);
+  // The client's trace headers are copied above, and may not belong to this trace.
+  headers.delete("traceparent");
+  headers.delete("tracestate");
   for (const [key, value] of Object.entries(carrier)) headers.set(key, value);
   return headers;
 };

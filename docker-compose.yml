@@ -1,8 +1,31 @@
+# `docker compose up -d --wait postgres redis redpanda` starts the dependencies for
+# local development. `pnpm demo` starts everything, with the `full` profile.
+#
+# The secrets below are public and exist for the local demo only. All ports are bound
+# to 127.0.0.1 because these services have known passwords, or none.
+
+x-demo-env: &demo-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://fluxgate:fluxgate@postgres:5432/fluxgate
+  REDIS_URL: redis://redis:6379
+  KAFKA_BROKER: redpanda:9092
+  JWT_SECRET: demo-only-jwt-secret-demo-only-jwt-secret
+  INTERNAL_ALERT_SECRET: &demo-alert-secret demo-only-internal-alert-secret
+  SECRETS_ENCRYPTION_KEY: demo-only-secrets-encryption-key
+  METRICS_TOKEN: demo-only-metrics-token
+  CORS_ORIGINS: http://localhost:3001
+  COOKIE_SECURE: "false"
+  # The demo upstream is a private address on the compose network. This turns off
+  # SSRF protection, which is why production refuses it without FLUXGATE_DEMO_MODE.
+  ALLOW_PRIVATE_TARGETS: "true"
+  FLUXGATE_DEMO_MODE: "true"
+  DEMO_UPSTREAM_URL: http://demo-upstream:4000
+
 services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: fluxgate
       POSTGRES_PASSWORD: fluxgate
@@ -18,7 +41,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -43,13 +66,156 @@ services:
       - --advertise-kafka-addr
       - internal://redpanda:9092,external://localhost:19092
     ports:
-      - "19092:19092"
-      - "8081:8081"
+      - "127.0.0.1:19092:19092"
+      - "127.0.0.1:8081:8081"
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health --exit-when-healthy --watch=false | grep -q 'Healthy:.*true'"]
       interval: 5s
       timeout: 5s
       retries: 30
+
+  # --- Everything below needs `--profile full` ---
+
+  migrate:
+    profiles: [full]
+    build: .
+    image: fluxgate-gateway
+    command: ["node", "dist/db/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://fluxgate:fluxgate@postgres:5432/fluxgate
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  seed:
+    profiles: [full]
+    image: fluxgate-gateway
+    command: ["node", "dist/demo/seed.js"]
+    environment: *demo-env
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  gateway:
+    profiles: [full]
+    image: fluxgate-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment: *demo-env
+    stop_grace_period: 30s
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+
+  frontend:
+    profiles: [full]
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:3000
+    image: fluxgate-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  ai-service:
+    profiles: [full]
+    build: ./ai-service
+    image: fluxgate-ai-service
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      ALERT_ENDPOINT: http://gateway:3000/internal/alerts
+      INTERNAL_ALERT_SECRET: *demo-alert-secret
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  demo-upstream:
+    profiles: [full]
+    image: fluxgate-gateway
+    command: ["node", "dist/demo/upstream.js"]
+    environment:
+      PORT: "4000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:4000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  demo-traffic:
+    profiles: [full]
+    image: fluxgate-gateway
+    command: ["node", "dist/demo/traffic.js"]
+    restart: unless-stopped
+    environment:
+      GATEWAY_URL: http://gateway:3000
+    healthcheck:
+      disable: true
+    depends_on:
+      gateway:
+        condition: service_healthy
+      demo-upstream:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+
+  prometheus:
+    profiles: [full]
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  grafana:
+    profiles: [full]
+    image: grafana/grafana:11.3.1
+    ports:
+      - "127.0.0.1:3002:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: fluxgate-demo
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fluxgate.json
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      prometheus:
+        condition: service_healthy
 
 volumes:
   pgdata:

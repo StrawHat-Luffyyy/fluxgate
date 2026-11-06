@@ -84,7 +84,7 @@ const envSchema = z
         message: "METRICS_TOKEN must be set in production",
       });
     }
-    if (value.ALLOW_PRIVATE_TARGETS && !process.env.FLUXGATE_DEMO_MODE) {
+    if (value.ALLOW_PRIVATE_TARGETS && process.env.FLUXGATE_DEMO_MODE !== "true") {
       ctx.addIssue({
         code: "custom",
         path: ["ALLOW_PRIVATE_TARGETS"],

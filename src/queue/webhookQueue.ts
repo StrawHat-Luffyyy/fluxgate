@@ -1,6 +1,7 @@
 import { Queue } from "bullmq";
 import { env } from "../config/env.js";
 import { createChildLogger } from "../lib/logger.js";
+import { currentRequestContext } from "../lib/requestContext.js";
 import { producerConnection } from "./connection.js";
 
 const log = createChildLogger("webhook-queue");
@@ -12,6 +13,9 @@ const RETRY_REMOVE_DELAY_MS = 100;
 
 export interface WebhookJob {
   deliveryId: string;
+  /** Absent on jobs enqueued by the sweeper, which runs outside any request. */
+  requestId?: string;
+  traceparent?: string;
 }
 
 let queue: Queue<WebhookJob> | undefined;
@@ -42,8 +46,13 @@ export const getWebhookQueue = (): Queue<WebhookJob> => {
  */
 export const enqueueDelivery = async (deliveryId: string): Promise<boolean> => {
   try {
+    const context = currentRequestContext();
+    const job: WebhookJob = {
+      deliveryId,
+      ...(context ? { requestId: context.requestId, traceparent: context.traceparent } : {}),
+    };
     await Promise.race([
-      getWebhookQueue().add("deliver", { deliveryId }, { jobId: deliveryId }),
+      getWebhookQueue().add("deliver", job, { jobId: deliveryId }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("Enqueue timed out")), ENQUEUE_TIMEOUT_MS).unref(),
       ),
@@ -73,6 +82,11 @@ export const enqueueRetry = async (deliveryId: string) => {
   }
   await enqueueDelivery(deliveryId);
 };
+
+const QUEUE_DEPTH_STATES = ["waiting", "active", "delayed", "failed"] as const;
+
+export const queueDepths = async (): Promise<Record<string, number>> =>
+  getWebhookQueue().getJobCounts(...QUEUE_DEPTH_STATES);
 
 export const closeWebhookQueue = async () => {
   await queue?.close();
