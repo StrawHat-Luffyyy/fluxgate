@@ -1,15 +1,20 @@
 import { Hono } from "hono";
-import { dashBoardAuth } from "../middleware/dashBoardAuth.js";
-import type { Env } from "../middleware/auth.js";
+import { z } from "zod";
+import { AppError } from "../lib/AppError.js";
+import { dashBoardAuth, type DashboardEnv } from "../middleware/dashBoardAuth.js";
+import { requiredRole } from "../middleware/rbac.js";
 import { getAnalyticsOverview } from "../services/analytics.service.js";
 
-const analyticsRouter = new Hono<Env>();
+const rangeSchema = z.enum(["1h", "24h", "7d"]).default("24h");
+
+const analyticsRouter = new Hono<DashboardEnv>();
 
 analyticsRouter.use("*", dashBoardAuth);
 
-analyticsRouter.get("/overview", async (c) => {
-  const tenantId = c.get("tenantId");
-  const overview = await getAnalyticsOverview(tenantId);
+analyticsRouter.get("/overview", requiredRole("viewer"), async (c) => {
+  const range = rangeSchema.safeParse(c.req.query("range"));
+  if (!range.success) throw AppError.badRequest("range must be 1h, 24h or 7d", "VALIDATION_ERROR");
+  const overview = await getAnalyticsOverview(c.get("tenantId"), range.data);
   return c.json({ success: true, ...overview });
 });
 

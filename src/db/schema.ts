@@ -1,4 +1,7 @@
 import {
+  bigint,
+  boolean,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -108,5 +111,82 @@ export const webhookDeliveries = pgTable(
   (table) => [
     index("webhook_deliveries_tenant_created_idx").on(table.tenantId, table.createdAt),
     index("webhook_deliveries_status_updated_idx").on(table.status, table.updatedAt),
+  ],
+);
+
+export const rateLimitStrategyEnum = pgEnum("rate_limit_strategy", [
+  "token_bucket",
+  "leaky_bucket",
+  "sliding_window",
+]);
+
+export const rateLimitConfigs = pgTable("rate_limit_configs", {
+  tenantId: uuid("tenant_id")
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  strategy: rateLimitStrategyEnum("strategy").notNull(),
+  capacity: integer("capacity").notNull(),
+  refillRate: doublePrecision("refill_rate").notNull(),
+  windowMs: integer("window_ms").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// One row per authenticated gateway request. Kept for RETENTION_DAYS, see
+// telemetry/requestLogWriter.ts.
+export const requestLogs = pgTable(
+  "request_logs",
+  {
+    requestId: uuid("request_id").primaryKey(),
+    // No foreign key, on purpose. Rows are inserted in batches, so one buffered row
+    // for a just-deleted tenant would fail the batch and lose other tenants' rows.
+    // Orphans age out through retention.
+    tenantId: uuid("tenant_id").notNull(),
+    apiKeyId: uuid("api_key_id").notNull(),
+    method: text("method").notNull(),
+    routePrefix: text("route_prefix").notNull(),
+    statusCode: integer("status_code").notNull(),
+    latencyMs: integer("latency_ms").notNull(),
+    requestBytes: bigint("request_bytes", { mode: "number" }).notNull(),
+    responseBytes: bigint("response_bytes", { mode: "number" }).notNull(),
+    rateLimited: boolean("rate_limited").notNull(),
+    upstreamCalled: boolean("upstream_called").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("request_logs_tenant_created_idx").on(table.tenantId, table.createdAt),
+    index("request_logs_created_idx").on(table.createdAt),
+  ],
+);
+
+export const anomalyStatusEnum = pgEnum("anomaly_status", [
+  "open",
+  "acknowledged",
+  "resolved",
+]);
+
+export const anomalies = pgTable(
+  "anomalies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .references(() => tenants.id, { onDelete: "cascade" })
+      .notNull(),
+    requestId: text("request_id").notNull(),
+    status: anomalyStatusEnum("status").notNull().default("open"),
+    detector: text("detector").notNull(),
+    score: doublePrecision("score").notNull(),
+    modelVersion: text("model_version").notNull(),
+    topFeature: text("top_feature").notNull(),
+    topFeatureValue: doublePrecision("top_feature_value").notNull(),
+    attribution: jsonb("attribution").notNull(),
+    features: jsonb("features").notNull(),
+    message: text("message").notNull(),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Kafka delivery is at-least-once: this is what makes alerts idempotent.
+    uniqueIndex("anomalies_tenant_request_idx").on(table.tenantId, table.requestId),
+    index("anomalies_tenant_detected_idx").on(table.tenantId, table.detectedAt),
   ],
 );

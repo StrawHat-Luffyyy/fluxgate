@@ -11,6 +11,7 @@ import { BlockedTargetError, guardedFetch } from "../lib/ssrf.js";
 import { clientIpOf } from "../lib/clientIp.js";
 import { SESSION_COOKIE } from "../middleware/dashBoardAuth.js";
 import { captureException } from "../monitoring/sentry.js";
+import { countingStream } from "./countingStream.js";
 import { buildUpstreamUrl, remainingPathOf, routePrefixOf } from "./path.js";
 
 const ROUTE_CACHE_TTL_SECONDS = 300;
@@ -151,17 +152,22 @@ export const proxyHandler = async (c: Context<Env>) => {
       // Path only: query strings can carry tokens, and this goes to external tools.
       span.setAttribute("upstream.target_url", upstreamUrl.split("?")[0]);
 
-      const hasBody = c.req.method !== "GET" && c.req.method !== "HEAD";
+      const requestBody = c.req.raw.body;
+      const hasBody = c.req.method !== "GET" && c.req.method !== "HEAD" && requestBody !== null;
+      // Set before the call, so timeouts and failures count as upstream requests:
+      // those are exactly the requests that latency figures must not hide.
+      c.set("upstreamCalled", true);
       const upstream = await guardedFetch(upstreamUrl, {
         method: c.req.method,
         headers: Object.fromEntries(buildUpstreamHeaders(c, tenantId)),
-        body: hasBody ? c.req.raw.body : null,
+        body: hasBody
+          ? countingStream(requestBody, (bytes) => c.set("requestBytes", bytes))
+          : null,
         signal: c.req.raw.signal,
         ...(hasBody ? { duplex: "half" as const } : {}),
       });
 
       span.setAttribute("http.status_code", upstream.status);
-      c.set("upstreamCalled", true);
 
       return new Response(upstream.body as ReadableStream | null, {
         status: upstream.status,
@@ -172,6 +178,7 @@ export const proxyHandler = async (c: Context<Env>) => {
 
       span.recordException(err as Error);
       if (isBlocked(err)) {
+        c.set("upstreamCalled", false);
         return c.json(
           { error: "Bad Gateway", message: "Upstream target is not allowed" },
           502,

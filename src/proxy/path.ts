@@ -8,6 +8,13 @@ export const routePrefixOf = (requestPath: string): string => {
   return `/${path.split("/")[1] ?? ""}`;
 };
 
+/**
+ * The prefix as stored in analytics. It comes straight from the client and Hono has
+ * decoded it, so it can hold a NUL byte, which Postgres text columns refuse.
+ */
+export const storableRoutePrefix = (requestPath: string): string =>
+  routePrefixOf(requestPath).replace(/\0/g, "").slice(0, 128);
+
 /** `/gateway/users/1` -> `/1` */
 export const remainingPathOf = (requestPath: string): string => {
   const path = requestPath.replace(GATEWAY_MOUNT, "");

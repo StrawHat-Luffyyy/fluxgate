@@ -7,6 +7,8 @@ const log = createChildLogger("webhook-queue");
 
 export const WEBHOOK_QUEUE = "webhooks";
 const ENQUEUE_TIMEOUT_MS = 1_000;
+const RETRY_REMOVE_ATTEMPTS = 10;
+const RETRY_REMOVE_DELAY_MS = 100;
 
 export interface WebhookJob {
   deliveryId: string;
@@ -54,15 +56,20 @@ export const enqueueDelivery = async (deliveryId: string): Promise<boolean> => {
 };
 
 /**
- * The job that gave up may not have been removed yet, and adding a job whose id
- * still exists is silently ignored. If removal fails, the job is still active; the
- * row is already pending, so the sweeper enqueues it shortly after it finishes.
+ * The worker marks a row dead just before its job fails, so the job can still be
+ * active here, and adding a job whose id still exists is silently ignored. It ends
+ * within moments, so wait briefly. If it does not, the row is pending anyway and
+ * the sweeper enqueues it.
  */
 export const enqueueRetry = async (deliveryId: string) => {
-  try {
-    await (await getWebhookQueue().getJob(deliveryId))?.remove();
-  } catch (err) {
-    log.debug({ err, deliveryId }, "Previous job not removable yet");
+  for (let attempt = 0; attempt < RETRY_REMOVE_ATTEMPTS; attempt++) {
+    try {
+      await (await getWebhookQueue().getJob(deliveryId))?.remove();
+      break;
+    } catch (err) {
+      log.debug({ err, deliveryId }, "Previous job not removable yet");
+      await new Promise((resolve) => setTimeout(resolve, RETRY_REMOVE_DELAY_MS));
+    }
   }
   await enqueueDelivery(deliveryId);
 };

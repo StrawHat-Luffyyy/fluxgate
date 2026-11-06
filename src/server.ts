@@ -8,6 +8,7 @@ import { closeOutboundConnections } from "./lib/ssrf.js";
 import { initSentry } from "./monitoring/sentry.js";
 import { startTracing, stopTracing } from "./monitoring/tracing.js";
 import { closeWebhookQueue } from "./queue/webhookQueue.js";
+import { startRequestLogWriter, stopRequestLogWriter } from "./telemetry/requestLogWriter.js";
 import { startWebhookWorker } from "./queue/webhookWorker.js";
 import { redis } from "./redis/client.js";
 import { markDraining } from "./services/health.service.js";
@@ -15,6 +16,7 @@ import { markDraining } from "./services/health.service.js";
 const log = createChildLogger("server");
 
 const SHUTDOWN_TIMEOUT_MS = 25_000;
+const DRAIN_TIMEOUT_MS = 15_000;
 // Gives a load balancer time to see the failing readiness probe before the
 // listening socket closes.
 const READINESS_DRAIN_MS = env.NODE_ENV === "production" ? 2_000 : 0;
@@ -22,6 +24,7 @@ const READINESS_DRAIN_MS = env.NODE_ENV === "production" ? 2_000 : 0;
 initSentry();
 await startTracing();
 startProducer();
+startRequestLogWriter();
 const worker = startWebhookWorker();
 
 const server: ServerType = serve({ fetch: app.fetch, port: env.PORT });
@@ -33,6 +36,11 @@ const closeServer = () =>
     // close() waits for in-flight responses. Idle keep-alive sockets would
     // otherwise hold it open until they time out.
     if ("closeIdleConnections" in server) server.closeIdleConnections();
+    // A long-lived stream must not use up the budget that flushing telemetry needs.
+    setTimeout(() => {
+      log.warn("Drain timed out, closing remaining connections");
+      if ("closeAllConnections" in server) server.closeAllConnections();
+    }, DRAIN_TIMEOUT_MS).unref();
   });
 
 let shuttingDown = false;
@@ -57,6 +65,7 @@ const shutdown = async (signal: string) => {
     await worker.close();
     await closeWebhookQueue();
     await stopProducer();
+    await stopRequestLogWriter();
     await closeOutboundConnections();
     await closeDb();
     await redis.quit().catch(() => redis.disconnect());

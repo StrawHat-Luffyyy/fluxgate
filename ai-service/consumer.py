@@ -110,8 +110,8 @@ class Processor:
 
         extra.update(requestId=event.request_id, tenantId=event.tenant_id)
 
-        if event.rate_limited:
-            logger.debug("rate-limited request skipped", extra=extra)
+        if event.skip:
+            logger.debug("request not scored (rate-limited or gateway-answered)", extra=extra)
             self.health.incr(processed=1)
             return Outcome.COMMIT
 
@@ -187,7 +187,11 @@ def run_loop(consumer: Any, processor: Processor, health: HealthState, stop: thr
             try:
                 consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
             except KafkaException as exc:
-                logger.error("seek failed: %s", exc)
+                # Cannot guarantee the message is reprocessed in this process: exit and let the
+                # restart resume from the committed offset.
+                logger.critical("seek failed, exiting to resume from committed offset: %s", exc)
+                health.update(fatal=True)
+                return 1
             stop.wait(RETRY_PAUSE_SECONDS)
     return 0
 
@@ -224,7 +228,8 @@ def main() -> int:
 
     from confluent_kafka import Consumer, KafkaError, Producer
 
-    scorer = Scorer(loaded.model, loaded.baseline, loaded.version, loaded.metadata.get("featureMax"))
+    scorer = Scorer(loaded.model, loaded.baseline, loaded.version, loaded.metadata.get("featureMax"),
+                    settings.range_guard_multiplier)
     health = HealthState(model_version=loaded.version)
     start_health_server(health, settings.health_port)
 

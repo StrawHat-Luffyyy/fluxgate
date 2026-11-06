@@ -16,6 +16,7 @@ const alertBody = (tenantId: string, requestId = crypto.randomUUID()) =>
     tenantId,
     alertType: "anomaly_detected",
     requestId,
+    detector: "forest",
     score: -0.12,
     modelVersion: "test",
     topFeature: "latencyMs",

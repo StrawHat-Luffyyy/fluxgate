@@ -26,6 +26,7 @@ class Settings:
     model_version: Optional[str]
     health_port: int
     log_level: str
+    range_guard_multiplier: float = 10.0
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Settings":
@@ -46,6 +47,13 @@ class Settings:
         if not 0 <= health_port <= 65535:
             raise SettingsError("HEALTH_PORT out of range")
 
+        try:
+            multiplier = float(get("RANGE_GUARD_MULTIPLIER", "10"))
+        except ValueError as exc:
+            raise SettingsError("RANGE_GUARD_MULTIPLIER must be a number") from exc
+        if multiplier < 0:
+            raise SettingsError("RANGE_GUARD_MULTIPLIER must be >= 0 (0 disables)")
+
         return cls(
             kafka_brokers=get("KAFKA_BROKERS", "localhost:19092"),
             kafka_topic=get("KAFKA_TOPIC", "gateway.traffic.logs"),
@@ -57,4 +65,5 @@ class Settings:
             model_version=get("MODEL_VERSION") or None,
             health_port=health_port,
             log_level=get("LOG_LEVEL", "INFO").upper(),
+            range_guard_multiplier=multiplier,
         )
