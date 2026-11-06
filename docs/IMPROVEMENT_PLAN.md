@@ -45,9 +45,9 @@ Status key: `[x]` done and verified, `[~]` done with a stated limitation, `[ ]` 
 
 ## Phase 2: real features
 
-- [~] Per-tenant rate-limit config (Postgres, Redis cache, admin API): no UI yet, that was Phase 5
+- [x] Per-tenant rate-limit config (Postgres, Redis cache, admin API and UI)
 - [x] Real analytics from `request_logs` (batched writes, retention job)
-- [~] Persisted anomalies with score and SHAP attribution: API only, not shown in the dashboard yet (Phase 5)
+- [x] Persisted anomalies with score and SHAP attribution, shown in the dashboard
 - [x] AI service: env config, reconnects, JSON logs, `/health`, versioned models, documented data
 - [x] `/health/live`, `/health/ready`
 - [~] Graceful shutdown: implemented, but its test skips on Windows and has not run yet (CI on Linux will be the first run)
@@ -70,25 +70,28 @@ Status key: `[x]` done and verified, `[~]` done with a stated limitation, `[ ]` 
 - [~] Webhook jobs re-enqueued by the sweeper log under a new trace and the delivery id, because the context is on the queue job and not in `webhook_deliveries`
 - [~] With OpenTelemetry on, a locally started trace has a parent span that is never exported, so a backend shows a missing root span. Tracing is off by default
 - [~] The queue depth gauge keeps its last value during a Redis outage
-- [~] The consumer commits per message: about 130 messages/s in the demo stack, well under the gateway's measured throughput, so sustained peak traffic builds Kafka lag rather than losing data
+- [~] The consumer commits per message: about 130 messages/s in one informal reading in the demo stack, well under the gateway's measured throughput, so sustained peak traffic builds Kafka lag rather than losing data
 
 ## Phase 5: UI
 
-Not started: work stopped after Phase 3 at the owner's request. The dashboard still has the old pages.
-
-
-- [ ] Design tokens, light/dark, component set
-- [ ] Pages: login/signup, overview, routes, keys, rate limits, anomalies, webhooks, team
-- [ ] Playwright e2e and browser verification
+- [x] Design tokens, light/dark, component set
+- [x] Pages: login/signup, overview, routes, keys, rate limits, anomalies, webhooks, team
+- [x] Playwright e2e, axe checks and browser verification
+- [~] Tested with mocked responses: the stale-data banner and the `/auth/me` failure state. Not measured: layout shift. "Mobile" means a 390 px viewport in desktop Chromium
+- [-] CSP headers, a signed-out visitor's brief view of the empty shell, and losing a one-time secret if a session expires while its dialog is open: left as known limitations, as they are not worth the complexity for a demo-scale dashboard
 
 ## Phase 6: docs
 
-Not started: work stopped after Phase 3 at the owner's request. README only had the discredited benchmark numbers removed and its commands corrected.
+- [x] README rewrite with real benchmarks, methodology, screenshots
+- [x] OpenAPI spec with a drift test, ADRs, CLAUDE.md gotchas updated
+- [x] Interview talking points, resume bullets
+- [-] GIF of the dashboard: the brief allowed screenshots or a GIF, and screenshots stay accurate with less effort
 
+## Not verified
 
-- [ ] README rewrite with real benchmarks, methodology, screenshots
-- [ ] OpenAPI spec, ADRs, CLAUDE.md gotchas updated
-- [ ] Interview talking points, resume bullets
+- GitHub Actions has never run these workflows, including the graceful shutdown test, which skips on Windows, and the CI demo job
+- Multi-instance load: the benchmark runs one gateway process
+- Neon: migrations have not been applied to the real database, which was set up with `db:push`, so the first migration may conflict
 
 ## Design decisions fixed up front
 
@@ -96,5 +99,5 @@ Not started: work stopped after Phase 3 at the owner's request. README only had 
 - **Alert idempotency:** `anomalies` has a unique `(tenant_id, request_id)`, so Kafka redelivery creates no duplicate alert.
 - **Webhook outbox:** a `webhook_deliveries` row is written before enqueueing; a sweeper re-enqueues rows left pending by a Redis outage.
 - **Health semantics:** Postgres down means not ready (503) because auth needs it. Redis or Kafka down means ready but `degraded` (200), matching fail-open behaviour.
-- **Known performance finding:** a local `pnpm bench` run measured about 630-700 requests/s through the full gateway path against about 11,000-12,000 direct to the same upstream. The cause has not been investigated.
+- **Performance finding:** the gateway path reaches about 4 to 7 percent of a bare upstream's throughput on one process, and absolute numbers vary about threefold between runs. A CPU profile found no single hotspot. See the README.
 - **Test split:** `pnpm test` runs unit tests with no services. `pnpm test:integration` needs Postgres and Redis, and refuses any database that is not local and named `*_test`.

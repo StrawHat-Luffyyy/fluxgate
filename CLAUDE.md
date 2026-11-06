@@ -18,12 +18,15 @@ pnpm test:integration                        # real Postgres and Redis, unit tes
 pnpm test:coverage                           # the same, enforcing thresholds
 pnpm test:e2e                                # real gateway and Python consumer processes
 pnpm bench                                   # real benchmarks, needs k6; writes docs/benchmarks/
+pnpm demo                                    # the whole system in Docker, seeded, with live traffic
+pnpm demo:reset                              # recreate the demo tenant; pnpm demo:down stops it
 pnpm exec tsc --noEmit                       # type check (src/ only: tests are not type-checked)
 pnpm build                                   # tsc to dist/
 pnpm db:generate                             # create a migration from src/db/schema.ts
 pnpm --filter frontend dev --port 3001       # dashboard; CORS_ORIGINS defaults to :3001
 pnpm --filter frontend lint
 pnpm --filter frontend build
+pnpm --filter frontend test:e2e              # Playwright against a real gateway; ports 3005 and 3006
 ```
 
 Python, run from inside `ai-service/`:
@@ -77,7 +80,11 @@ Both set `tenantId` on the Hono context, and every query must filter on it. `req
 - **Set rate limit headers on `c.res`, not with `c.header()`,** after `next()`: `c.header()` is lost when a handler returns a raw `Response`, as the proxy does.
 - **Tests run `ALLOW_PRIVATE_TARGETS=true`** because upstreams are on localhost. `tests/integration/ssrf-blocked.test.ts` and `tests/unit/ssrf.test.ts` turn it off with `vi.hoisted`, which is the pattern to copy.
 - **The model is trained on synthetic data.** See `ai-service/README.md` for the limitations, including the latency range it does not flag.
-- **The dashboard predates the current API.** `frontend/` still has the old pages and does not use most of the new endpoints.
+- **Browser tests need the `fluxgate_ui_test` database.** Create it once; migrations run at startup. They use Redis db 1 because a running demo's worker on db 0 would take their webhook jobs.
+- **A `.next` folder from before a page was deleted breaks `next build`** with a missing-module type error. Delete `frontend/.next`.
+- **Inbound `traceparent` is ignored** except behind `TRUST_PROXY` and on `/internal/alerts`, on purpose: a client choosing its trace id could join its logs to another tenant's.
+- **The demo seed is compose-only.** Its routes and encrypted secrets are valid only on the compose network, and `assertLocalDatabase` refuses other databases.
+- **`docs/openapi.json` must change with the routes.** `tests/unit/openapi.test.ts` fails on any route in only one of them.
 - **SIGTERM tests skip on Windows**, where Node's `kill()` ends the process immediately. CI on Linux runs them.
 
 ## Frontend
