@@ -1,0 +1,157 @@
+{
+  "environment": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12450H",
+    "logicalCores": 12,
+    "memoryGb": 15.7,
+    "os": "Windows_NT 10.0.26300",
+    "node": "v24.11.1",
+    "redis": "7.4.12",
+    "k6": "k6.exe v2.1.0 (commit/83a87a41e2, go1.26.4, windows/amd64)",
+    "gitCommit": "eb35cda",
+    "uncommittedChanges": false,
+    "date": "2026-11-06T14:31:47.518Z"
+  },
+  "scripts": [
+    {
+      "script": "token_bucket",
+      "inFlight": 50,
+      "opsPerSecond": 37211,
+      "p50Ms": 1.25,
+      "p95Ms": 2.07,
+      "p99Ms": 3.04,
+      "admittedOfLimit": "1000/1000"
+    },
+    {
+      "script": "token_bucket",
+      "inFlight": 200,
+      "opsPerSecond": 39085,
+      "p50Ms": 5.24,
+      "p95Ms": 8.13,
+      "p99Ms": 12.9,
+      "admittedOfLimit": "1000/1000"
+    },
+    {
+      "script": "token_bucket",
+      "inFlight": 500,
+      "opsPerSecond": 33621,
+      "p50Ms": 14.53,
+      "p95Ms": 17.84,
+      "p99Ms": 19.71,
+      "admittedOfLimit": "1000/1000"
+    },
+    {
+      "script": "leaky_bucket",
+      "inFlight": 50,
+      "opsPerSecond": 26080,
+      "p50Ms": 1.81,
+      "p95Ms": 2.64,
+      "p99Ms": 3.84,
+      "admittedOfLimit": "1000/1000"
+    },
+    {
+      "script": "leaky_bucket",
+      "inFlight": 200,
+      "opsPerSecond": 25820,
+      "p50Ms": 7.4,
+      "p95Ms": 9.92,
+      "p99Ms": 13.49,
+      "admittedOfLimit": "1000/1000"
+    },
+    {
+      "script": "leaky_bucket",
+      "inFlight": 500,
+      "opsPerSecond": 26761,
+      "p50Ms": 17.86,
+      "p95Ms": 23.28,
+      "p99Ms": 34.79,
+      "admittedOfLimit": "1000/1000"
+    },
+    {
+      "script": "sliding_window",
+      "inFlight": 50,
+      "opsPerSecond": 22066,
+      "p50Ms": 2.08,
+      "p95Ms": 3.44,
+      "p99Ms": 4.94,
+      "admittedOfLimit": "1000/1000"
+    },
+    {
+      "script": "sliding_window",
+      "inFlight": 200,
+      "opsPerSecond": 21448,
+      "p50Ms": 8.38,
+      "p95Ms": 14.5,
+      "p99Ms": 20.09,
+      "admittedOfLimit": "1000/1000"
+    },
+    {
+      "script": "sliding_window",
+      "inFlight": 500,
+      "opsPerSecond": 24327,
+      "p50Ms": 19.51,
+      "p95Ms": 26.35,
+      "p99Ms": 47.41,
+      "admittedOfLimit": "1000/1000"
+    }
+  ],
+  "http": {
+    "direct": [
+      {
+        "vus": 50,
+        "requestsPerSecond": 12617,
+        "p50Ms": 3.31,
+        "p95Ms": 5.25,
+        "p99Ms": 9.57,
+        "requests": 315472
+      },
+      {
+        "vus": 200,
+        "requestsPerSecond": 12231,
+        "p50Ms": 15.04,
+        "p95Ms": 24.77,
+        "p99Ms": 34.61,
+        "requests": 306049
+      },
+      {
+        "vus": 500,
+        "requestsPerSecond": 9482,
+        "p50Ms": 47.08,
+        "p95Ms": 75.26,
+        "p99Ms": 79.9,
+        "requests": 237485
+      }
+    ],
+    "viaGateway": [
+      {
+        "vus": 50,
+        "requestsPerSecond": 534,
+        "p50Ms": 77.78,
+        "p95Ms": 142.74,
+        "p99Ms": 188.88,
+        "requests": 13396
+      },
+      {
+        "vus": 200,
+        "requestsPerSecond": 562,
+        "p50Ms": 301.07,
+        "p95Ms": 457.93,
+        "p99Ms": 1135.3,
+        "requests": 14143
+      },
+      {
+        "vus": 500,
+        "requestsPerSecond": 623,
+        "p50Ms": 468.15,
+        "p95Ms": 1019.85,
+        "p99Ms": 5829.87,
+        "requests": 16025
+      }
+    ],
+    "enforcement": {
+      "sent": 2000,
+      "limit": 500,
+      "served": 500,
+      "limited": 1500
+    }
+  }
+}
